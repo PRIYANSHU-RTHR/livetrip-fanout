@@ -1,0 +1,21 @@
+# binaries and build output
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+coverage.*
+
+# local env and secrets
+.env
+.env.*
+
+# editors and OS
+.vscode/
+.idea/
+.cursor/
+.DS_Store
+Thumbs.db
+
+# load test results
+/results/
