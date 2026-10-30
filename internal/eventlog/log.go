@@ -38,6 +38,9 @@ type Log interface {
 	// FirstSeq is the oldest Seq still kept, or 0 if the topic has none.
 	FirstSeq(ctx context.Context, topic domain.Topic) (uint64, error)
 
+	// LastSeq is the newest Seq assigned on topic, or 0 if none was.
+	LastSeq(ctx context.Context, topic domain.Topic) (uint64, error)
+
 	// LatestLocation returns the newest location per cab on topic.
 	LatestLocation(ctx context.Context, topic domain.Topic) ([]domain.Event, error)
 

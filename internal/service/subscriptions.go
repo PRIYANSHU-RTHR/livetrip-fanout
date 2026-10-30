@@ -79,7 +79,8 @@ func NewSubscriptions(authz auth.Authorizer, hub *fanout.Hub, log eventlog.Log, 
 // hold; Conn.Resume sends them once, by Seq.
 //
 // Errors wrap domain.ErrForbidden, auth.ErrLookupFailed, ErrUnavailable
-// (event log), fanout.ErrClosed, or whatever confirm returned. On error c
+// (event log or broker subscribe), fanout.ErrClosed, or whatever confirm
+// returned. On error c
 // is left detached from topic.
 func (s *Subscriptions) Subscribe(ctx context.Context, p domain.Principal, topic domain.Topic, lastSeq uint64,
 	c *fanout.Conn, confirm func(Resume) error) error {
@@ -90,7 +91,11 @@ func (s *Subscriptions) Subscribe(ctx context.Context, p domain.Principal, topic
 	c.Hold(topic)
 	if err := s.hub.Attach(topic, c); err != nil {
 		c.CancelHold(topic)
-		return err
+		if errors.Is(err, fanout.ErrClosed) {
+			return err
+		}
+		// The node could not subscribe to the topic in the broker.
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
 	err := s.catchUp(ctx, topic, lastSeq, c, confirm)
 	if err != nil {

@@ -177,6 +177,14 @@ func (l *Log) FirstSeq(ctx context.Context, topic domain.Topic) (uint64, error) 
 	return first, nil
 }
 
+func (l *Log) LastSeq(ctx context.Context, topic domain.Topic) (uint64, error) {
+	last, err := uint64OrZero(l.client.Get(ctx, keysFor(topic).seq))
+	if err != nil {
+		return 0, fmt.Errorf("redis eventlog: last seq: %w", err)
+	}
+	return last, nil
+}
+
 func (l *Log) LatestLocation(ctx context.Context, topic domain.Topic) ([]domain.Event, error) {
 	vals, err := l.client.HVals(ctx, keysFor(topic).latest).Result()
 	if err != nil {

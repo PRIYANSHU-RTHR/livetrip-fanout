@@ -12,8 +12,11 @@ import (
 //
 // Hooks run one at a time and in the order the changes happened, but never
 // while Publish is blocked. They must not call back into the Hub.
+//
+// If OnFirstSubscriber fails, Attach undoes the attach and returns its
+// error; OnLastUnsubscribe is then not called for that topic.
 type Hooks struct {
-	OnFirstSubscriber func(domain.Topic)
+	OnFirstSubscriber func(domain.Topic) error
 	OnLastUnsubscribe func(domain.Topic)
 }
 
@@ -42,7 +45,7 @@ func NewHub(hooks Hooks) *Hub {
 }
 
 // Attach subscribes c to topic. Attaching twice is a no-op. It returns
-// ErrClosed if c is already closed.
+// ErrClosed if c is already closed, or the OnFirstSubscriber error.
 func (h *Hub) Attach(topic domain.Topic, c *Conn) error {
 	if c.Err() != nil {
 		return ErrClosed
@@ -66,7 +69,12 @@ func (h *Hub) Attach(topic domain.Topic, c *Conn) error {
 	h.mu.Unlock()
 
 	if first && h.hooks.OnFirstSubscriber != nil {
-		h.hooks.OnFirstSubscriber(topic)
+		if err := h.hooks.OnFirstSubscriber(topic); err != nil {
+			h.mu.Lock()
+			h.remove(topic, c)
+			h.mu.Unlock()
+			return err
+		}
 	}
 	return nil
 }
@@ -147,6 +155,19 @@ func (h *Hub) Publish(ev domain.Event) int {
 		}
 	}
 	return n
+}
+
+// CloseTopic closes every connection subscribed to topic with cause and
+// returns how many it closed. Like Publish it does no I/O and leaves
+// detaching to each connection's owner.
+func (h *Hub) CloseTopic(topic domain.Topic, cause error) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+
+	for c := range h.topics[topic] {
+		c.Close(cause)
+	}
+	return len(h.topics[topic])
 }
 
 // Subscribers returns how many connections are subscribed to topic.

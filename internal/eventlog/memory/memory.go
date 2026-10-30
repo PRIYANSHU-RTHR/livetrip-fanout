@@ -166,6 +166,19 @@ func (l *Log) FirstSeq(ctx context.Context, topic domain.Topic) (uint64, error) 
 	return tl.firstSeq(), nil
 }
 
+func (l *Log) LastSeq(ctx context.Context, topic domain.Topic) (uint64, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	tl := l.topic(topic, false)
+	if tl == nil {
+		return 0, nil
+	}
+	tl.mu.Lock()
+	defer tl.mu.Unlock()
+	return tl.lastSeq, nil
+}
+
 func (l *Log) LatestLocation(ctx context.Context, topic domain.Topic) ([]domain.Event, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

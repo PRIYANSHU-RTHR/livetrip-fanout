@@ -27,7 +27,7 @@ func newHookRecorder(t *testing.T) *hookRecorder {
 
 func (r *hookRecorder) hooks() Hooks {
 	return Hooks{
-		OnFirstSubscriber: func(tp domain.Topic) { r.record(tp, true) },
+		OnFirstSubscriber: func(tp domain.Topic) error { r.record(tp, true); return nil },
 		OnLastUnsubscribe: func(tp domain.Topic) { r.record(tp, false) },
 	}
 }
@@ -156,6 +156,47 @@ func TestDetachAll(t *testing.T) {
 	h.DetachAll(c) // again: no-op
 	if rec.lasts != 2 {
 		t.Fatalf("lasts=%d after second DetachAll, want 2", rec.lasts)
+	}
+}
+
+func TestFailedFirstHookUndoesAttach(t *testing.T) {
+	boom := errors.New("subscribe not confirmed")
+	var lasts int
+	h := NewHub(Hooks{
+		OnFirstSubscriber: func(domain.Topic) error { return boom },
+		OnLastUnsubscribe: func(domain.Topic) { lasts++ },
+	})
+	c := NewConn(newFakeSink())
+
+	if err := h.Attach(topicN(1), c); !errors.Is(err, boom) {
+		t.Fatalf("Attach = %v, want the hook error", err)
+	}
+	if h.Topics() != 0 || h.Subscribers(topicN(1)) != 0 {
+		t.Fatal("conn stayed attached after the hook failed")
+	}
+	h.DetachAll(c)
+	if lasts != 0 {
+		t.Fatal("last hook fired for a topic whose first hook failed")
+	}
+}
+
+func TestCloseTopic(t *testing.T) {
+	h := NewHub(Hooks{})
+	a, b, other := NewConn(newFakeSink()), NewConn(newFakeSink()), NewConn(newFakeSink())
+	mustAttach(t, h, topicN(1), a)
+	mustAttach(t, h, topicN(1), b)
+	mustAttach(t, h, topicN(2), other)
+
+	if n := h.CloseTopic(topicN(1), ErrResync); n != 2 {
+		t.Fatalf("CloseTopic closed %d, want 2", n)
+	}
+	for _, c := range []*Conn{a, b} {
+		if !errors.Is(c.Err(), ErrResync) {
+			t.Fatalf("conn cause = %v, want ErrResync", c.Err())
+		}
+	}
+	if other.Err() != nil {
+		t.Fatalf("conn on another topic was closed: %v", other.Err())
 	}
 }
 

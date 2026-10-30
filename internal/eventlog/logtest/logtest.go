@@ -239,6 +239,9 @@ func testTrimming(t *testing.T, newLog Factory) {
 		t.Fatalf("After(first-2) err = %v, want ErrTrimmed", err)
 	}
 	checkContiguous(t, mustAfter(t, l, topic, first-1), first, total)
+	if last, err := l.LastSeq(ctx, topic); err != nil || last != total {
+		t.Fatalf("LastSeq = (%d, %v), want (%d, nil)", last, err, total)
+	}
 	if evs := mustAfter(t, l, topic, total); len(evs) != 0 {
 		t.Fatalf("After(last) returned %d events, want 0", len(evs))
 	}
@@ -336,6 +339,9 @@ func testEmptyTopic(t *testing.T, newLog Factory) {
 
 	if first, err := l.FirstSeq(ctx, topic); err != nil || first != 0 {
 		t.Fatalf("FirstSeq = (%d, %v), want (0, nil)", first, err)
+	}
+	if last, err := l.LastSeq(ctx, topic); err != nil || last != 0 {
+		t.Fatalf("LastSeq = (%d, %v), want (0, nil)", last, err)
 	}
 	if evs := mustAfter(t, l, topic, 0); len(evs) != 0 {
 		t.Fatalf("After = %d events, want 0", len(evs))

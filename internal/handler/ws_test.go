@@ -404,6 +404,7 @@ func TestCloseFrameCodes(t *testing.T) {
 		{fmt.Errorf("%w: bad sig", domain.ErrUnauthenticated), CloseUnauthenticated},
 		{fmt.Errorf("%w: other tenant", domain.ErrForbidden), CloseForbidden},
 		{fanout.ErrSlowConsumer, CloseSlowConsumer},
+		{fanout.ErrResync, CloseTryAgainLater},
 		{fmt.Errorf("%w: timeout", auth.ErrLookupFailed), CloseTryAgainLater},
 		{fmt.Errorf("%w: dial tcp 10.0.0.9:6379", service.ErrUnavailable), CloseTryAgainLater},
 		{errOverloaded, CloseTryAgainLater},

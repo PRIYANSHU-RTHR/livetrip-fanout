@@ -18,6 +18,9 @@ var (
 	ErrSlowConsumer = errors.New("slow consumer")
 	// ErrClosed means the connection is already closed.
 	ErrClosed = errors.New("connection closed")
+	// ErrResync means this node missed events of a topic and could not
+	// recover them. The client reconnects and resumes from its last seq.
+	ErrResync = errors.New("resync required")
 )
 
 // Sink is where a connection writes. The websocket implementation maps the

@@ -232,6 +232,10 @@ func closeFrame(cause error) (code int, reason string) {
 		return CloseForbidden, "forbidden"
 	case errors.Is(cause, fanout.ErrSlowConsumer):
 		return CloseSlowConsumer, "slow consumer"
+	case errors.Is(cause, fanout.ErrResync):
+		// This node lost events of a topic; the client resumes elsewhere
+		// or here with its lastSeq.
+		return CloseTryAgainLater, "resync"
 	case errors.Is(cause, auth.ErrLookupFailed), errors.Is(cause, service.ErrUnavailable),
 		errors.Is(cause, errOverloaded):
 		return CloseTryAgainLater, "try again later"

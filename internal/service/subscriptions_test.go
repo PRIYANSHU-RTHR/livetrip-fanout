@@ -280,6 +280,25 @@ func TestSubscribeLogDownDetaches(t *testing.T) {
 	}
 }
 
+func TestSubscribeBrokerDownIsUnavailable(t *testing.T) {
+	mem := memory.New(memory.Config{})
+	e := newEnv(t, mem, mem)
+	e.hub = fanout.NewHub(fanout.Hooks{
+		OnFirstSubscriber: func(domain.Topic) error { return errors.New("subscribe not confirmed") },
+	})
+	e.subs = NewSubscriptions(e.subs.authz, e.hub, mem, SubscriptionsConfig{})
+	c, _ := connect(t)
+
+	called := false
+	err := e.subs.Subscribe(context.Background(), alice, trip42, 0, c, func(Resume) error { called = true; return nil })
+	if !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("err = %v, want ErrUnavailable", err)
+	}
+	if called || e.hub.Topics() != 0 {
+		t.Fatal("subscribe confirmed or attached although the broker subscribe failed")
+	}
+}
+
 func TestSubscribeClosedConn(t *testing.T) {
 	e := newMemEnv(t, memory.Config{})
 	c := fanout.NewConn(newRecSink())
