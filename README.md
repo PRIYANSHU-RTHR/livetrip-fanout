@@ -21,9 +21,9 @@ At peak, about 20,000 cabs send updates and up to 200,000 screens are watching. 
 ## How it works, in short
 
 1. **A cab sends an update** to the publisher service.
-2. **Redis numbers it.** Every update on a trip gets the next number (1, 2, 3 ...) and is saved in a short history. A retried update keeps its original number, so nothing is counted twice.
+2. **Redis numbers it.** Every status change and SOS on a trip gets the next number (1, 2, 3 ...) and is saved in a short history. Locations get their own version number instead. A retried update keeps its original number, so nothing is counted twice.
 3. **Gateways deliver it.** Three gateway servers hold the live connections. Each one only listens for the trips its own users are watching.
-4. **Every user has their own queue.** A slow user only fills their own queue. Locations are "latest only", so a slow phone never builds up a backlog of old positions. SOS always goes to the front.
+4. **Every user has their own queue.** A slow user only fills their own queue. Locations are "latest only", so a slow phone never builds up a backlog of old positions. Status changes and SOS always go ahead of locations.
 5. **Reconnecting users catch up.** A phone remembers the last number it saw. When it reconnects, to any server, it asks for "everything after 18" and gets exactly what it missed.
 
 Every subscription is checked against the user's company and role, not just their login.
@@ -62,7 +62,7 @@ Stop everything with `make down`. The HTTP API is also in `postman/` and `api/op
 make loadtest ARGS="-kill gateway-2 -out results/run.json"
 ```
 
-Machine: laptop, WSL2 on Windows, 8 CPUs, 9 GB RAM. Everything (Docker, all services and the load generator) ran on the same machine.
+Machine: laptop, WSL2 on Windows, 8 CPUs, about 10 GB RAM. Everything (Docker, all services and the load generator) ran on the same machine.
 
 | Measure | Result |
 |---|---|
@@ -70,8 +70,8 @@ Machine: laptop, WSL2 on Windows, 8 CPUs, 9 GB RAM. Everything (Docker, all serv
 | Messages delivered | 693,357 (about 11,560 per second) |
 | SOS: sent to shown on a desk | median 2.3 ms, 99% within 16.6 ms, none over 2 s |
 | Status change: end to end | median 3.7 ms, 99% within 83 ms |
-| Users moved after the gateway was killed | 3,333, back online in 0.9 s median, 1.5 s worst |
-| Status or SOS updates lost | **0 of 109,190** |
+| Users moved after the gateway was killed | 3,333, back online in 0.9 s median, 1.55 s worst |
+| Status or SOS deliveries missed | **0 of 109,190** (22,029 published, each sent to every user watching it) |
 
 The slowest SOS (1.1 s) went to a desk that was on the killed gateway. It still arrived within the 2 second limit. The load test fails on its own if any user misses an update or SOS goes over 2 seconds.
 

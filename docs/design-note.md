@@ -29,9 +29,9 @@ The client sends `{"op":"subscribe","topic":"t:acme:trip:42","lastSeq":18}`.
 
 1. **Authorize.** The tenant comes from the token and must match the topic. Then the role rule applies. "No such trip" and "not your trip" give the same answer.
 2. **Hold, then attach.** Live status and SOS for this topic are held aside on the connection before it joins the hub, so nothing published from now on can be lost or overtake the replay.
-3. **Read the catch-up.** `XRANGE` after 18 returns 19, 20, 21. If `lastSeq` is 0, or older than the oldest kept entry, the client gets a snapshot instead: the newest event per (cab, kind) and the `seq` it is valid at.
-4. **Confirm.** `{"type":"subscribed","resume":"replay","asOfSeq":21}` is sent before any event of the topic.
-5. **Send in order.** The missed events through the catch-up lane, then held live events not already sent, then the newest location per cab.
+3. **Read the catch-up.** `XRANGE` after 18 returns 19, 20, 21, 22 (22 was published meanwhile, so it is also waiting in the hold). If `lastSeq` is 0, or older than the oldest kept entry, the client gets a snapshot instead: the newest event per (cab, kind) and the `seq` it is valid at.
+4. **Confirm.** `{"type":"subscribed","resume":"replay","asOfSeq":22}` is sent before any event of the topic.
+5. **Send in order.** The missed events through the catch-up lane, then held live events not already sent (the held 22 is skipped, so it arrives once), then the newest location per cab.
 
 ## 4. Failure modes
 
@@ -58,7 +58,7 @@ The client sends `{"op":"subscribe","topic":"t:acme:trip:42","lastSeq":18}`.
 | Connections per gateway | 50,000 | New connections get `1013` |
 | Publisher requests in flight | 256 | `503` for location and status; SOS not counted |
 
-A connection costs roughly 20 to 40 KB (three goroutines, a 1 KB read buffer, the reliable lane and the location map; write buffers come from a shared pool). The ceiling is the single Redis primary, because every publish runs one Lua script there. The next step is Redis Cluster; the `{topic}` hash tags already allow that without code changes.
+A connection is estimated (not measured) at roughly 20 to 40 KB (three goroutines, a 1 KB read buffer, the reliable lane and the location map; write buffers come from a shared pool). The ceiling is the single Redis primary, because every publish runs one Lua script there. The next step is Redis Cluster; the `{topic}` hash tags already allow that without code changes.
 
 ## 6. WebSocket protocol
 
@@ -67,7 +67,7 @@ Token in `Authorization: Bearer ...` or `?token=`.
 | Direction | Message |
 |---|---|
 | client | `{"op":"subscribe","topic":"t:acme:trip:42","lastSeq":17}`, `unsubscribe`, `ack` |
-| server | `hello` (gateway name, always first), `subscribed` (replay or snapshot, before any event), `event`, `error` |
+| server | `hello` (gateway name, always first), `subscribed` (replay or snapshot, before any event), `event`, `unsubscribed`, `error` |
 
 | Close code | Meaning |
 |---|---|
