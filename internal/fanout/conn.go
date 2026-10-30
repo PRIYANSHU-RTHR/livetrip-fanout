@@ -32,7 +32,7 @@ type Sink interface {
 
 // Conn is one client with two lanes:
 //   - reliable: status and SOS, FIFO, never dropped;
-//   - location: conflated, only the newest event per cab is kept.
+//   - location: conflated, only the newest event per (topic, cab) is kept.
 //
 // A third, unbuffered catch-up lane carries resume events (see Hold and
 // Resume), so a long replay never fills the reliable lane.
@@ -47,9 +47,9 @@ type Conn struct {
 	locReady chan struct{}
 
 	mu      sync.Mutex
-	latest  map[string]domain.Event // cabID -> newest by Ver
-	pending []string                // cabIDs with an unsent location, FIFO
-	dirty   map[string]bool         // cabIDs currently in pending
+	latest  map[locKey]domain.Event // newest by Ver
+	pending []locKey                // keys with an unsent location, FIFO
+	dirty   map[locKey]bool         // keys currently in pending
 	// holds has an entry per topic being resumed; its reliable events
 	// wait there until Resume has sent the catch-up.
 	holds map[domain.Topic][]domain.Event
@@ -74,8 +74,8 @@ func NewConnWithMetrics(sink Sink, m Metrics) *Conn {
 		reliable: make(chan domain.Event, ReliableBuffer),
 		catchup:  make(chan domain.Event),
 		locReady: make(chan struct{}, 1),
-		latest:   make(map[string]domain.Event),
-		dirty:    make(map[string]bool),
+		latest:   make(map[locKey]domain.Event),
+		dirty:    make(map[locKey]bool),
 		done:     make(chan struct{}),
 	}
 }
@@ -195,17 +195,25 @@ func (c *Conn) push(ctx context.Context, ev domain.Event) error {
 	}
 }
 
+// locKey names one conflation slot. Ver is a per-topic counter, so a cab
+// seen on two topics has two slots whose versions are not comparable.
+type locKey struct {
+	topic domain.Topic
+	cabID string
+}
+
 func (c *Conn) conflate(ev domain.Event) {
+	k := locKey{ev.Topic, ev.CabID}
 	c.mu.Lock()
-	if cur, ok := c.latest[ev.CabID]; ok && ev.Ver <= cur.Ver {
+	if cur, ok := c.latest[k]; ok && ev.Ver <= cur.Ver {
 		c.mu.Unlock()
 		return // stale or duplicate
 	}
-	c.latest[ev.CabID] = ev
-	replaced := c.dirty[ev.CabID]
+	c.latest[k] = ev
+	replaced := c.dirty[k]
 	if !replaced {
-		c.dirty[ev.CabID] = true
-		c.pending = append(c.pending, ev.CabID)
+		c.dirty[k] = true
+		c.pending = append(c.pending, k)
 	}
 	c.mu.Unlock()
 	if replaced {
@@ -221,19 +229,19 @@ func (c *Conn) signalLocation() {
 	}
 }
 
-// nextLocation pops the oldest pending cab and returns its newest location.
-// more reports whether other cabs are still pending.
+// nextLocation pops the oldest pending (topic, cab) and returns its newest
+// location. more reports whether others are still pending.
 func (c *Conn) nextLocation() (ev domain.Event, ok, more bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.pending) == 0 {
 		return domain.Event{}, false, false
 	}
-	cab := c.pending[0]
-	c.pending[0] = ""
+	k := c.pending[0]
+	c.pending[0] = locKey{}
 	c.pending = c.pending[1:]
-	delete(c.dirty, cab)
-	return c.latest[cab], true, len(c.pending) > 0
+	delete(c.dirty, k)
+	return c.latest[k], true, len(c.pending) > 0
 }
 
 // Run writes queued events to the sink until the connection closes, ctx

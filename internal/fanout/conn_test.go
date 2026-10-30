@@ -154,6 +154,30 @@ func TestConflationKeepsNewestPerCab(t *testing.T) {
 	}
 }
 
+// Ver is per topic: the same cab on two topics must not share one slot.
+// Regression: keyed by cab alone, the office topic's ver 15 was dropped
+// as older than the trip topic's ver 16.
+func TestConflationIsPerTopicAndCab(t *testing.T) {
+	sink := newFakeSink()
+	c := NewConn(sink)
+	stop := start(t, c)
+	defer stop()
+
+	office := domain.Topic{Tenant: "acme", Kind: domain.TopicOffice, ID: "blr-1"}
+	onOffice := func(ev domain.Event) domain.Event { ev.Topic = office; return ev }
+
+	mustEnqueue(t, c, loc("cab-7", 16))
+	if ev := sink.next(t); ev.Topic != trip || ev.Ver != 16 {
+		t.Fatalf("got %s ver=%d, want trip ver 16", ev.Topic, ev.Ver)
+	}
+	mustEnqueue(t, c, onOffice(loc("cab-7", 15)))
+	if ev := sink.next(t); ev.Topic != office || ev.Ver != 15 {
+		t.Fatalf("got %s ver=%d, want office ver 15", ev.Topic, ev.Ver)
+	}
+	mustEnqueue(t, c, loc("cab-7", 14)) // older than trip's 16: still dropped
+	sink.expectNoMore(t)
+}
+
 func TestSOSWrittenBeforeQueuedLocations(t *testing.T) {
 	sink := newFakeSink()
 	c := NewConn(sink)
