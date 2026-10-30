@@ -5,6 +5,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -15,6 +16,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/auth"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/eventlog/redis"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/handler"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/service"
@@ -26,6 +28,8 @@ type config struct {
 	poolSize    int
 	sosPoolSize int
 	maxInFlight int
+	jwtSecret   string
+	devTokens   bool
 }
 
 func loadConfig() config {
@@ -35,6 +39,8 @@ func loadConfig() config {
 		poolSize:    envInt("REDIS_POOL_SIZE", 64),
 		sosPoolSize: envInt("SOS_REDIS_POOL_SIZE", 8),
 		maxInFlight: envInt("MAX_IN_FLIGHT", service.DefaultMaxInFlight),
+		jwtSecret:   os.Getenv("JWT_SECRET"),
+		devTokens:   os.Getenv("DEV_TOKENS") == "true",
 	}
 }
 
@@ -66,6 +72,15 @@ func run(logger *slog.Logger, cfg config) error {
 
 	mux := http.NewServeMux()
 	handler.NewPublishHandler(pub, logger).Register(mux)
+	if cfg.devTokens {
+		// Anyone who can reach this route can mint any token: dev only.
+		tokens, err := auth.NewTokenService([]byte(cfg.jwtSecret), auth.TokenConfig{})
+		if err != nil {
+			return fmt.Errorf("DEV_TOKENS needs JWT_SECRET: %w", err)
+		}
+		handler.NewDevTokenHandler(tokens).Register(mux)
+		logger.Warn("dev token endpoint enabled", "route", "POST /v1/dev/token")
+	}
 	mux.Handle("GET /healthz", handler.Health(logger, map[string]handler.HealthCheck{
 		"redis":     func(ctx context.Context) error { return events.Ping(ctx).Err() },
 		"redis-sos": func(ctx context.Context) error { return sos.Ping(ctx).Err() },
