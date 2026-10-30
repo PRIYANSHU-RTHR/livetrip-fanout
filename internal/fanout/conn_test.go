@@ -367,3 +367,129 @@ func TestConcurrentEnqueue(t *testing.T) {
 		}
 	}
 }
+
+func reliableOn(topic domain.Topic, seq uint64) domain.Event {
+	ev := reliable(domain.KindStatus, seq)
+	ev.Topic = topic
+	return ev
+}
+
+// Live events that arrive during a resume wait in the hold; the ones the
+// catch-up already covers are sent once, the rest follow in order.
+func TestResumeMergesHeldEventsWithoutDuplicates(t *testing.T) {
+	sink := newFakeSink()
+	c := NewConn(sink)
+	stop := start(t, c)
+	defer stop()
+
+	c.Hold(trip)
+	for seq := uint64(3); seq <= 6; seq++ {
+		mustEnqueue(t, c, reliable(domain.KindStatus, seq))
+	}
+	sink.expectNoMore(t) // held, not written
+
+	catchup := []domain.Event{reliable(domain.KindStatus, 1), reliable(domain.KindStatus, 2),
+		reliable(domain.KindStatus, 3), reliable(domain.KindStatus, 4)}
+	if err := c.Resume(context.Background(), trip, catchup, 4); err != nil {
+		t.Fatal(err)
+	}
+	mustEnqueue(t, c, reliable(domain.KindStatus, 7)) // hold is over: direct
+	for want := uint64(1); want <= 7; want++ {
+		if ev := sink.next(t); ev.Seq != want {
+			t.Fatalf("seq %d, want %d", ev.Seq, want)
+		}
+	}
+	sink.expectNoMore(t)
+}
+
+// A snapshot's events are not contiguous and may be older than asOf; they
+// are all sent, and held events up to asOf are dropped.
+func TestResumeSnapshotDropsHeldUpToAsOf(t *testing.T) {
+	sink := newFakeSink()
+	c := NewConn(sink)
+	stop := start(t, c)
+	defer stop()
+
+	c.Hold(trip)
+	mustEnqueue(t, c, reliable(domain.KindStatus, 20))
+	mustEnqueue(t, c, reliable(domain.KindStatus, 21))
+	snap := []domain.Event{reliable(domain.KindStatus, 12), reliable(domain.KindSOS, 17)}
+	if err := c.Resume(context.Background(), trip, snap, 20); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []uint64{12, 17, 21} {
+		if ev := sink.next(t); ev.Seq != want {
+			t.Fatalf("seq %d, want %d", ev.Seq, want)
+		}
+	}
+	sink.expectNoMore(t)
+}
+
+func TestHoldOverflowClosesAsSlowConsumer(t *testing.T) {
+	c := NewConn(newFakeSink())
+	c.Hold(trip)
+	for seq := uint64(1); seq <= ReliableBuffer; seq++ {
+		mustEnqueue(t, c, reliable(domain.KindStatus, seq))
+	}
+	if err := c.Enqueue(reliable(domain.KindStatus, ReliableBuffer+1)); !errors.Is(err, ErrSlowConsumer) {
+		t.Fatalf("err = %v, want ErrSlowConsumer", err)
+	}
+	if !errors.Is(c.Err(), ErrSlowConsumer) {
+		t.Fatalf("conn err = %v", c.Err())
+	}
+}
+
+// A replay much longer than the reliable lane must not make live events
+// of other topics look like a slow consumer.
+func TestLongReplayLeavesReliableLaneFree(t *testing.T) {
+	sink := newFakeSink()
+	sink.gate, sink.entered = make(chan struct{}), make(chan struct{}, 4096)
+	c := NewConn(sink)
+	stop := start(t, c)
+	defer stop()
+
+	catchup := make([]domain.Event, 500)
+	for i := range catchup {
+		catchup[i] = reliable(domain.KindStatus, uint64(i+1))
+	}
+	c.Hold(trip)
+	resumed := make(chan error, 1)
+	go func() { resumed <- c.Resume(context.Background(), trip, catchup, 0) }()
+
+	<-sink.entered // Run is stuck writing the first catch-up event
+	other := domain.Topic{Tenant: "acme", Kind: domain.TopicTrip, ID: "43"}
+	for seq := uint64(1); seq <= ReliableBuffer; seq++ {
+		mustEnqueue(t, c, reliableOn(other, seq))
+	}
+	close(sink.gate)
+	if err := <-resumed; err != nil {
+		t.Fatal(err)
+	}
+
+	got := map[domain.Topic]uint64{}
+	for i := 0; i < 500+ReliableBuffer; i++ {
+		ev := sink.next(t)
+		if ev.Seq != got[ev.Topic]+1 {
+			t.Fatalf("%s seq %d after %d", ev.Topic, ev.Seq, got[ev.Topic])
+		}
+		got[ev.Topic] = ev.Seq
+	}
+}
+
+func TestResumeReturnsWhenConnCloses(t *testing.T) {
+	c := NewConn(newFakeSink()) // Run never started: nobody takes catch-up
+	c.Hold(trip)
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Resume(context.Background(), trip, []domain.Event{reliable(domain.KindStatus, 1)}, 0)
+	}()
+	c.Close(errors.New("client went away"))
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrClosed) {
+			t.Fatalf("err = %v, want ErrClosed", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Resume blocked after close")
+	}
+}

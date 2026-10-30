@@ -16,6 +16,7 @@ import (
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/auth"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/domain"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/fanout"
+	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/service"
 )
 
 // Close codes sent to clients. 4xxx are application codes; 1013 is the
@@ -33,7 +34,6 @@ const (
 	DefaultWriteTimeout     = 10 * time.Second
 	DefaultPingInterval     = 25 * time.Second
 	DefaultPongTimeout      = 60 * time.Second
-	DefaultAuthTimeout      = 2 * time.Second
 
 	// maxClientMessage caps one client frame. Client messages are a few
 	// hundred bytes; anything larger is a bug or abuse.
@@ -58,8 +58,10 @@ type TokenVerifier interface {
 // SubscriptionService is what the websocket handler needs from the
 // subscribe use case.
 type SubscriptionService interface {
-	Authorize(ctx context.Context, p domain.Principal, topic domain.Topic) error
-	Attach(ctx context.Context, topic domain.Topic, c *fanout.Conn) error
+	// Subscribe authorizes, attaches c and sends the catch-up after
+	// lastSeq. confirm runs before any event of topic is written.
+	Subscribe(ctx context.Context, p domain.Principal, topic domain.Topic, lastSeq uint64,
+		c *fanout.Conn, confirm func(service.Resume) error) error
 	Detach(topic domain.Topic, c *fanout.Conn)
 	Release(c *fanout.Conn)
 }
@@ -75,8 +77,6 @@ type WSConfig struct {
 	// it waits for any sign of life before dropping the connection.
 	PingInterval time.Duration
 	PongTimeout  time.Duration
-	// AuthTimeout bounds one subscribe authorization (trip lookup).
-	AuthTimeout time.Duration
 }
 
 func (c *WSConfig) defaults() {
@@ -95,9 +95,6 @@ func (c *WSConfig) defaults() {
 	if c.PongTimeout <= 0 {
 		c.PongTimeout = DefaultPongTimeout
 	}
-	if c.AuthTimeout <= 0 {
-		c.AuthTimeout = DefaultAuthTimeout
-	}
 }
 
 // WSHandler serves GET /ws.
@@ -107,7 +104,9 @@ func (c *WSConfig) defaults() {
 //	client: {"op":"subscribe","topic":"t:acme:trip:42","lastSeq":17}
 //	        {"op":"unsubscribe","topic":"..."}
 //	        {"op":"ack","topic":"...","lastSeq":18}
-//	server: {"type":"subscribed","topic":"..."}  before any event of the topic
+//	server: {"type":"subscribed","topic":"...","resume":"replay"|"snapshot","asOfSeq":20}
+//	        before any event of the topic; on "snapshot" the client drops
+//	        what it has for the topic
 //	        {"type":"unsubscribed","topic":"..."}
 //	        {"type":"event", ...domain.Event fields}
 //	        {"type":"error","code":"bad_request","message":"..."}
@@ -233,7 +232,8 @@ func closeFrame(cause error) (code int, reason string) {
 		return CloseForbidden, "forbidden"
 	case errors.Is(cause, fanout.ErrSlowConsumer):
 		return CloseSlowConsumer, "slow consumer"
-	case errors.Is(cause, auth.ErrLookupFailed), errors.Is(cause, errOverloaded):
+	case errors.Is(cause, auth.ErrLookupFailed), errors.Is(cause, service.ErrUnavailable),
+		errors.Is(cause, errOverloaded):
 		return CloseTryAgainLater, "try again later"
 	case errors.Is(cause, context.Canceled):
 		return websocket.CloseGoingAway, "server shutting down"
@@ -261,6 +261,8 @@ type eventFrame struct {
 type replyFrame struct {
 	Type    string `json:"type"`
 	Topic   string `json:"topic,omitempty"`
+	Resume  string `json:"resume,omitempty"`
+	AsOfSeq uint64 `json:"asOfSeq,omitempty"`
 	Code    string `json:"code,omitempty"`
 	Message string `json:"message,omitempty"`
 }
@@ -306,8 +308,8 @@ type session struct {
 type clientMessage struct {
 	Op    string `json:"op"`
 	Topic string `json:"topic"`
-	// LastSeq is the last seq the client has for the topic. Resume uses it
-	// on subscribe; on ack it is informational.
+	// LastSeq is the last seq the client has for the topic; 0 means none.
+	// On subscribe the server resumes after it; on ack it is informational.
 	LastSeq uint64 `json:"lastSeq"`
 }
 
@@ -352,7 +354,7 @@ func (s *session) handle(ctx context.Context, data []byte) error {
 
 	switch msg.Op {
 	case opSubscribe:
-		return s.subscribe(ctx, topic)
+		return s.subscribe(ctx, topic, msg.LastSeq)
 	case opUnsubscribe:
 		if _, ok := s.topics[topic]; ok {
 			s.h.subs.Detach(topic, s.conn)
@@ -367,7 +369,7 @@ func (s *session) handle(ctx context.Context, data []byte) error {
 	return s.badRequest("op must be subscribe, unsubscribe or ack")
 }
 
-func (s *session) subscribe(ctx context.Context, topic domain.Topic) error {
+func (s *session) subscribe(ctx context.Context, topic domain.Topic, lastSeq uint64) error {
 	if _, ok := s.topics[topic]; ok {
 		return s.sink.send(replyFrame{Type: "subscribed", Topic: topic.String()})
 	}
@@ -376,23 +378,18 @@ func (s *session) subscribe(ctx context.Context, topic domain.Topic) error {
 			Message: "unsubscribe from a topic before adding another"})
 	}
 
-	actx, cancel := context.WithTimeout(ctx, s.h.cfg.AuthTimeout)
-	err := s.h.subs.Authorize(actx, s.p, topic)
-	cancel()
+	// The reply goes out from inside Subscribe, after the resume mode is
+	// known and before any event of the topic.
+	confirm := func(r service.Resume) error {
+		return s.sink.send(replyFrame{Type: "subscribed", Topic: topic.String(),
+			Resume: string(r.Mode), AsOfSeq: r.AsOfSeq})
+	}
+	err := s.h.subs.Subscribe(ctx, s.p, topic, lastSeq, s.conn, confirm)
 	if err != nil {
-		s.h.log.Info("ws subscribe denied", "tenant", s.p.Tenant, "role", s.p.Role, "topic", topic.String(), "err", err)
-		if errors.Is(err, domain.ErrForbidden) || errors.Is(err, auth.ErrLookupFailed) {
-			return err
+		if errors.Is(err, domain.ErrForbidden) || errors.Is(err, auth.ErrLookupFailed) ||
+			errors.Is(err, service.ErrUnavailable) {
+			s.h.log.Info("ws subscribe failed", "tenant", s.p.Tenant, "role", s.p.Role, "topic", topic.String(), "err", err)
 		}
-		return auth.ErrLookupFailed
-	}
-
-	// Confirm first, then attach, so "subscribed" precedes the topic's
-	// events on the wire.
-	if err := s.sink.send(replyFrame{Type: "subscribed", Topic: topic.String()}); err != nil {
-		return err
-	}
-	if err := s.h.subs.Attach(ctx, topic, s.conn); err != nil {
 		return err
 	}
 	s.topics[topic] = struct{}{}

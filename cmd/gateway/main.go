@@ -1,5 +1,6 @@
 // Command gateway holds client websocket connections, authorizes each
-// subscribe and fans events out to the subscribed connections.
+// subscribe, catches the client up from the Redis event log and fans live
+// events out to the subscribed connections.
 package main
 
 import (
@@ -15,7 +16,10 @@ import (
 	"syscall"
 	"time"
 
+	goredis "github.com/redis/go-redis/v9"
+
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/auth"
+	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/eventlog/redis"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/fanout"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/handler"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/service"
@@ -23,6 +27,7 @@ import (
 
 type config struct {
 	addr      string
+	redisAddr string
 	jwtSecret string
 	devTokens bool
 	maxConns  int
@@ -31,6 +36,7 @@ type config struct {
 func loadConfig() config {
 	return config{
 		addr:      env("ADDR", ":8080"),
+		redisAddr: env("REDIS_ADDR", "localhost:6379"),
 		jwtSecret: os.Getenv("JWT_SECRET"),
 		devTokens: os.Getenv("DEV_TOKENS") == "true",
 		maxConns:  envInt("MAX_CONNS", handler.DefaultMaxConns),
@@ -50,9 +56,13 @@ func run(logger *slog.Logger, cfg config) error {
 	if err != nil {
 		return fmt.Errorf("JWT_SECRET: %w", err)
 	}
+	rdb := goredis.NewClient(&goredis.Options{Addr: cfg.redisAddr})
+	defer rdb.Close()
+
 	trips := auth.NewCachedTrips(demoTrips(), auth.CacheConfig{})
 	hub := fanout.NewHub(fanout.Hooks{})
-	subs := service.NewSubscriptions(auth.NewRoleAuthorizer(trips), hub)
+	subs := service.NewSubscriptions(auth.NewRoleAuthorizer(trips), hub,
+		redis.New(rdb, redis.Config{}), service.SubscriptionsConfig{})
 	ws := handler.NewWSHandler(tokens, subs, logger, handler.WSConfig{MaxConns: cfg.maxConns})
 
 	mux := http.NewServeMux()
@@ -62,7 +72,9 @@ func run(logger *slog.Logger, cfg config) error {
 		handler.NewDevTokenHandler(tokens).Register(mux)
 		logger.Warn("dev token endpoint enabled", "route", "POST /v1/dev/token")
 	}
-	mux.Handle("GET /healthz", handler.Health(logger, nil))
+	mux.Handle("GET /healthz", handler.Health(logger, map[string]handler.HealthCheck{
+		"redis": func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
+	}))
 
 	// Websocket handlers outlive Server.Shutdown (it skips hijacked
 	// connections), so their request contexts hang off root and are

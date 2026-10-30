@@ -14,6 +14,7 @@ import (
 
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/auth"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/domain"
+	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/eventlog/memory"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/fanout"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/service"
 )
@@ -23,6 +24,7 @@ var wsSecret = []byte("0123456789abcdef0123456789abcdef")
 type wsEnv struct {
 	srv    *httptest.Server
 	hub    *fanout.Hub
+	log    *memory.Log
 	tokens *auth.TokenService
 	ws     *WSHandler
 }
@@ -40,12 +42,14 @@ func newWSEnv(t *testing.T, trips auth.TripDirectory, cfg WSConfig) *wsEnv {
 		trips = st
 	}
 	hub := fanout.NewHub(fanout.Hooks{})
-	h := NewWSHandler(tokens, service.NewSubscriptions(auth.NewRoleAuthorizer(trips), hub), quietLog, cfg)
+	log := memory.New(memory.Config{MaxLen: 5})
+	subs := service.NewSubscriptions(auth.NewRoleAuthorizer(trips), hub, log, service.SubscriptionsConfig{})
+	h := NewWSHandler(tokens, subs, quietLog, cfg)
 	mux := http.NewServeMux()
 	h.Register(mux)
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	return &wsEnv{srv: srv, hub: hub, tokens: tokens, ws: h}
+	return &wsEnv{srv: srv, hub: hub, log: log, tokens: tokens, ws: h}
 }
 
 func (e *wsEnv) token(t *testing.T, p domain.Principal) string {
@@ -78,6 +82,8 @@ type frame struct {
 	Type    string `json:"type"`
 	Topic   string `json:"topic"`
 	Code    string `json:"code"`
+	Resume  string `json:"resume"`
+	AsOfSeq uint64 `json:"asOfSeq"`
 	Kind    string `json:"kind"`
 	Seq     uint64 `json:"seq"`
 	EventID string `json:"eventId"`
@@ -330,6 +336,64 @@ func TestWSFrozenClientDoesNotDelayOthers(t *testing.T) {
 	waitFor(t, "frozen client dropped", func() bool { return env.hub.Subscribers(statusEvent(topic, 0).Topic) == 1 })
 }
 
+// publish stores a status in the log and fans it out, as the gateway's
+// Redis routing will.
+func (e *wsEnv) publish(t *testing.T, topic string, id string) {
+	t.Helper()
+	ev := statusEvent(topic, 0)
+	ev.ID = id
+	seq, _, err := e.log.Publish(context.Background(), ev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev.Seq = seq
+	e.hub.Publish(ev)
+}
+
+func subscribeFrom(t *testing.T, c *websocket.Conn, topic string, lastSeq uint64) frame {
+	t.Helper()
+	if err := c.WriteJSON(map[string]any{"op": "subscribe", "topic": topic, "lastSeq": lastSeq}); err != nil {
+		t.Fatal(err)
+	}
+	f := read(t, c)
+	if f.Type != "subscribed" {
+		t.Fatalf("got %+v, want subscribed", f)
+	}
+	return f
+}
+
+// A reconnecting client sends its lastSeq and gets only what it missed;
+// one away longer than the log keeps (MaxLen 5 here) gets a snapshot.
+func TestWSResumeReplayAndSnapshot(t *testing.T) {
+	env := newWSEnv(t, nil, WSConfig{})
+	const topic = "t:acme:trip:42"
+	for i := 1; i <= 8; i++ {
+		env.publish(t, topic, fmt.Sprint("s-", i))
+	}
+
+	c := env.dialAs(t, alice)
+	if f := subscribeFrom(t, c, topic, 6); f.Resume != "replay" || f.AsOfSeq != 8 {
+		t.Fatalf("subscribed = %+v, want replay as of 8", f)
+	}
+	for want := uint64(7); want <= 8; want++ {
+		if f := read(t, c); f.Type != "event" || f.Seq != want {
+			t.Fatalf("frame = %+v, want event seq %d", f, want)
+		}
+	}
+	env.publish(t, topic, "s-9")
+	if f := read(t, c); f.Seq != 9 {
+		t.Fatalf("live seq %d, want 9", f.Seq)
+	}
+
+	old := env.dialAs(t, alice)
+	if f := subscribeFrom(t, old, topic, 1); f.Resume != "snapshot" || f.AsOfSeq != 9 {
+		t.Fatalf("subscribed = %+v, want snapshot as of 9", f)
+	}
+	if f := read(t, old); f.Type != "event" || f.Seq != 9 {
+		t.Fatalf("frame = %+v, want snapshot event seq 9", f)
+	}
+}
+
 func TestCloseFrameCodes(t *testing.T) {
 	tests := []struct {
 		cause error
@@ -341,6 +405,7 @@ func TestCloseFrameCodes(t *testing.T) {
 		{fmt.Errorf("%w: other tenant", domain.ErrForbidden), CloseForbidden},
 		{fanout.ErrSlowConsumer, CloseSlowConsumer},
 		{fmt.Errorf("%w: timeout", auth.ErrLookupFailed), CloseTryAgainLater},
+		{fmt.Errorf("%w: dial tcp 10.0.0.9:6379", service.ErrUnavailable), CloseTryAgainLater},
 		{errOverloaded, CloseTryAgainLater},
 		{context.Canceled, websocket.CloseGoingAway},
 		{errors.New("write tcp: broken pipe"), websocket.CloseInternalServerErr},

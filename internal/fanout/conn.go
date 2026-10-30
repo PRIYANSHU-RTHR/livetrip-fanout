@@ -31,17 +31,24 @@ type Sink interface {
 //   - reliable: status and SOS, FIFO, never dropped;
 //   - location: conflated, only the newest event per cab is kept.
 //
+// A third, unbuffered catch-up lane carries resume events (see Hold and
+// Resume), so a long replay never fills the reliable lane.
+//
 // Enqueue never blocks and never does I/O; Run is the only goroutine that
 // touches the Sink.
 type Conn struct {
 	sink     Sink
 	reliable chan domain.Event
+	catchup  chan domain.Event
 	locReady chan struct{}
 
 	mu      sync.Mutex
 	latest  map[string]domain.Event // cabID -> newest by Ver
 	pending []string                // cabIDs with an unsent location, FIFO
 	dirty   map[string]bool         // cabIDs currently in pending
+	// holds has an entry per topic being resumed; its reliable events
+	// wait there until Resume has sent the catch-up.
+	holds map[domain.Topic][]domain.Event
 
 	done      chan struct{}
 	closeOnce sync.Once
@@ -52,6 +59,7 @@ func NewConn(sink Sink) *Conn {
 	return &Conn{
 		sink:     sink,
 		reliable: make(chan domain.Event, ReliableBuffer),
+		catchup:  make(chan domain.Event),
 		locReady: make(chan struct{}, 1),
 		latest:   make(map[string]domain.Event),
 		dirty:    make(map[string]bool),
@@ -60,8 +68,9 @@ func NewConn(sink Sink) *Conn {
 }
 
 // Enqueue queues ev for this client without blocking. It returns
-// ErrSlowConsumer if the reliable lane was full (the connection is then
-// closed) and ErrClosed if the connection was already closed.
+// ErrSlowConsumer if the reliable lane (or the topic's hold) was full (the
+// connection is then closed) and ErrClosed if the connection was already
+// closed.
 func (c *Conn) Enqueue(ev domain.Event) error {
 	select {
 	case <-c.done:
@@ -74,12 +83,101 @@ func (c *Conn) Enqueue(ev domain.Event) error {
 		return nil
 	}
 
+	c.mu.Lock()
+	if held, ok := c.holds[ev.Topic]; ok {
+		if len(held) >= ReliableBuffer {
+			c.mu.Unlock()
+			c.Close(ErrSlowConsumer)
+			return ErrSlowConsumer
+		}
+		c.holds[ev.Topic] = append(held, ev)
+		c.mu.Unlock()
+		return nil
+	}
+	c.mu.Unlock()
+
 	select {
 	case c.reliable <- ev:
 		return nil
 	default:
 		c.Close(ErrSlowConsumer)
 		return ErrSlowConsumer
+	}
+}
+
+// Hold starts a resume of topic: from now on its reliable events are kept
+// aside (at most ReliableBuffer) instead of queued. Call it before the
+// connection is attached to the topic, then read the catch-up from the log
+// and call Resume, or CancelHold if the subscribe fails.
+func (c *Conn) Hold(topic domain.Topic) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.holds == nil {
+		c.holds = make(map[domain.Topic][]domain.Event)
+	}
+	if _, ok := c.holds[topic]; !ok {
+		c.holds[topic] = nil
+	}
+}
+
+// CancelHold ends a hold and discards what it kept.
+func (c *Conn) CancelHold(topic domain.Topic) {
+	c.mu.Lock()
+	delete(c.holds, topic)
+	c.mu.Unlock()
+}
+
+// Resume sends catchup (reliable events from the log, in order), then the
+// held live events with Seq > asOf and not already sent, then ends the
+// hold so later events take the reliable lane again. asOf is the topic Seq
+// the catch-up brings the client to.
+//
+// Unlike Enqueue it blocks until Run has taken each event, so it must not
+// be called from Run. It returns ErrClosed if the connection closes and
+// ctx.Err() if ctx ends first.
+func (c *Conn) Resume(ctx context.Context, topic domain.Topic, catchup []domain.Event, asOf uint64) error {
+	last := asOf
+	for _, ev := range catchup {
+		if err := c.push(ctx, ev); err != nil {
+			return err
+		}
+		last = max(last, ev.Seq)
+	}
+	for {
+		c.mu.Lock()
+		held := c.holds[topic]
+		if len(held) == 0 {
+			// The catch-up lane is unbuffered, so everything sent so far
+			// is already in Run's hands: nothing queued after this point
+			// can overtake it.
+			delete(c.holds, topic)
+			c.mu.Unlock()
+			return nil
+		}
+		c.holds[topic] = nil
+		c.mu.Unlock()
+
+		for _, ev := range held {
+			if ev.Seq <= last {
+				continue // also in the catch-up
+			}
+			if err := c.push(ctx, ev); err != nil {
+				return err
+			}
+			last = ev.Seq
+		}
+	}
+}
+
+// push hands ev to Run through the catch-up lane.
+func (c *Conn) push(ctx context.Context, ev domain.Event) error {
+	select {
+	case c.catchup <- ev:
+		return nil
+	case <-c.done:
+		return ErrClosed
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }
 
@@ -121,8 +219,9 @@ func (c *Conn) nextLocation() (ev domain.Event, ok, more bool) {
 }
 
 // Run writes queued events to the sink until the connection closes, ctx
-// ends or a write fails. Reliable events always go before locations, and
-// at most one location is written between checks of the reliable lane.
+// ends or a write fails. Reliable events always go before catch-up and
+// locations, and at most one catch-up or location event is written between
+// checks of the reliable lane.
 // It closes the sink on return and returns the close cause.
 func (c *Conn) Run(ctx context.Context) error {
 	defer func() { _ = c.sink.Close(c.cause) }()
@@ -148,6 +247,10 @@ func (c *Conn) Run(ctx context.Context) error {
 		case <-c.done:
 			return c.cause
 		case ev := <-c.reliable:
+			if err := c.write(ev); err != nil {
+				return err
+			}
+		case ev := <-c.catchup:
 			if err := c.write(ev); err != nil {
 				return err
 			}
