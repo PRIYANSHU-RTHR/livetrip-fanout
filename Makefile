@@ -2,8 +2,10 @@ GO ?= go
 COMPOSE ?= docker compose -f deploy/docker-compose.yml
 CMD ?= gateway
 REDIS_ADDR ?= localhost:6379
+# e.g. make loadtest ARGS="-kill gateway-2"
+ARGS ?=
 
-.PHONY: build test test-redis redis lint run up down
+.PHONY: build test test-redis redis lint run up down loadtest
 
 build:
 	$(GO) build ./...
@@ -29,3 +31,7 @@ up:
 
 down:
 	$(COMPOSE) down
+
+# Needs the stack from `make up`.
+loadtest:
+	$(GO) run ./cmd/loadtest $(ARGS)

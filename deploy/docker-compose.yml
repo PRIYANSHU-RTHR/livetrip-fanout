@@ -1,3 +1,38 @@
+# One-command run from the repo root:
+#   docker compose -f deploy/docker-compose.yml up -d --build    (or: make up)
+#
+#   http://localhost:8080   nginx: /ws -> gateways, /v1/... -> publisher
+#   http://localhost:8091-8093  gateway-1/2/3 directly (metrics, debugging)
+#   http://localhost:9090   prometheus
+#
+# JWT_SECRET defaults to a demo value; override it from the shell or a .env file.
+
+x-app-env: &app-env
+  REDIS_ADDR: redis:6379
+  JWT_SECRET: ${JWT_SECRET:-demo-secret-change-me-0123456789abcdef}
+  DEV_TOKENS: ${DEV_TOKENS:-true}
+  LOG_LEVEL: ${LOG_LEVEL:-info}
+
+x-gateway: &gateway
+  image: livetrip/gateway:dev
+  environment:
+    <<: *app-env
+    ADDR: ":8080"
+  depends_on:
+    redis:
+      condition: service_healthy
+  restart: unless-stopped
+  # Each websocket is one file descriptor.
+  ulimits:
+    nofile: { soft: 65536, hard: 65536 }
+  healthcheck:
+    test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+    interval: 3s
+    timeout: 2s
+    retries: 10
+  # Gives open websockets time to get their 1001 close on `docker compose stop`.
+  stop_grace_period: 15s
+
 services:
   redis:
     image: redis:7.4-alpine
@@ -5,8 +40,98 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--appendfsync", "everysec"]
     ports:
       - "6379:6379"
+    volumes:
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 2s
       timeout: 2s
       retries: 15
+
+  publisher:
+    image: livetrip/publisher:dev
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args: { CMD: publisher }
+    environment:
+      <<: *app-env
+      ADDR: ":8081"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  gateway-1:
+    <<: *gateway
+    # Only gateway-1 builds the image; gateway-2/3 reuse the same tag.
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+      args: { CMD: gateway }
+    ports:
+      - "8091:8080"
+
+  gateway-2:
+    <<: *gateway
+    depends_on:
+      redis:
+        condition: service_healthy
+      gateway-1:
+        condition: service_started
+    ports:
+      - "8092:8080"
+
+  gateway-3:
+    <<: *gateway
+    depends_on:
+      redis:
+        condition: service_healthy
+      gateway-1:
+        condition: service_started
+    ports:
+      - "8093:8080"
+
+  nginx:
+    image: nginx:1.27-alpine
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+    ports:
+      - "8080:8080"
+    ulimits:
+      nofile: { soft: 65536, hard: 65536 }
+    depends_on:
+      publisher:
+        condition: service_healthy
+      gateway-1:
+        condition: service_healthy
+      gateway-2:
+        condition: service_healthy
+      gateway-3:
+        condition: service_healthy
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 3s
+      timeout: 2s
+      retries: 10
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    depends_on:
+      - publisher
+      - gateway-1
+      - gateway-2
+      - gateway-3
+
+volumes:
+  redis-data:
