@@ -86,6 +86,9 @@ type WSConfig struct {
 	Metrics Metrics
 	// ConnMetrics is passed to each fanout.Conn; nil means none.
 	ConnMetrics fanout.Metrics
+	// NodeID names this gateway in the hello frame, so a client can tell
+	// which node it landed on.
+	NodeID string
 }
 
 func (c *WSConfig) defaults() {
@@ -116,7 +119,9 @@ func (c *WSConfig) defaults() {
 //	client: {"op":"subscribe","topic":"t:acme:trip:42","lastSeq":17}
 //	        {"op":"unsubscribe","topic":"..."}
 //	        {"op":"ack","topic":"...","lastSeq":18}
-//	server: {"type":"subscribed","topic":"...","resume":"replay"|"snapshot","asOfSeq":20}
+//	server: {"type":"hello","node":"gateway-1"}
+//	        first frame, right after the token is accepted
+//	        {"type":"subscribed","topic":"...","resume":"replay"|"snapshot","asOfSeq":20}
 //	        before any event of the topic; on "snapshot" the client drops
 //	        what it has for the topic
 //	        {"type":"unsubscribed","topic":"..."}
@@ -200,6 +205,12 @@ func (h *WSHandler) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Sent before the reader starts, so it is always the first frame.
+	if err := sink.send(replyFrame{Type: "hello", Node: h.cfg.NodeID}); err != nil {
+		_ = sink.Close(errClientGone)
+		return
+	}
+
 	ctx := r.Context()
 	conn := fanout.NewConnWithMetrics(sink, h.cfg.ConnMetrics)
 	s := &session{h: h, p: p, ws: ws, sink: sink, conn: conn, topics: make(map[domain.Topic]struct{})}
@@ -277,6 +288,7 @@ type eventFrame struct {
 
 type replyFrame struct {
 	Type    string `json:"type"`
+	Node    string `json:"node,omitempty"`
 	Topic   string `json:"topic,omitempty"`
 	Resume  string `json:"resume,omitempty"`
 	AsOfSeq uint64 `json:"asOfSeq,omitempty"`

@@ -1,0 +1,290 @@
+openapi: 3.1.0
+info:
+  title: LiveTrip HTTP API
+  version: 1.0.0
+  summary: Cab-facing publish API and dev token issuer.
+  description: |
+    Cabs publish trip events over HTTP. Each event is sequenced per topic in
+    Redis and fanned out to WebSocket subscribers by the gateways.
+
+    - **status** and **sos** are reliable: each gets a gap-free `seq` per topic.
+    - **location** is conflatable: each gets a `ver` per topic; only the newest per cab is kept.
+    - Publishing is idempotent per `(topic, eventId)` for 10 minutes. Retry with the
+      **same** `eventId` after a timeout or a 503; a repeat returns **200** with
+      `duplicate: true` and the original position instead of **201**.
+
+    The WebSocket protocol (`GET /ws`) is described in the README.
+servers:
+  - url: http://localhost:8080
+    description: nginx (publisher behind /v1/, gateways behind /ws and the pages)
+tags:
+  - name: events
+    description: Publish trip events.
+  - name: dev
+    description: Development only; enabled with DEV_TOKENS=true.
+  - name: ops
+    description: Health.
+
+paths:
+  /v1/events:
+    post:
+      tags: [events]
+      operationId: publishEvent
+      summary: Publish a status or location event
+      description: |
+        `seq` and `ver` are assigned by the server; sending either is rejected.
+        SOS should use `POST /v1/sos`, which has its own Redis pool.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublishRequest' }
+            examples:
+              status:
+                summary: Status on a trip
+                value:
+                  eventId: 7f3c2a90-5b1e-4c3e-9f0a-1d2e3f4a5b6c
+                  tenant: acme
+                  cabId: cab-7
+                  topic: t:acme:trip:42
+                  kind: status
+                  createdAt: '2026-10-30T09:15:00Z'
+                  payload: { status: arriving }
+              location:
+                summary: Location on a trip
+                value:
+                  eventId: 0b8e4d22-9a51-4f7c-8e3d-2c1b0a9f8e7d
+                  tenant: acme
+                  cabId: cab-7
+                  topic: t:acme:trip:42
+                  kind: location
+                  createdAt: '2026-10-30T09:15:01Z'
+                  payload: { lat: 12.9716, lng: 77.5946 }
+      responses:
+        '201': { $ref: '#/components/responses/Published' }
+        '200': { $ref: '#/components/responses/Duplicate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /v1/sos:
+    post:
+      tags: [events]
+      operationId: publishSOS
+      summary: Raise an SOS
+      description: |
+        Same body as `/v1/events`. `kind` may be omitted (it defaults to `sos`);
+        any other kind is rejected with 400. The usual topic is
+        `t:{tenant}:sos:{officeId}`, watched by that office's security desk.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PublishRequest' }
+            example:
+              eventId: 3d9f1e6a-2c4b-4a8d-b7e5-6f0a1b2c3d4e
+              tenant: acme
+              cabId: cab-7
+              topic: t:acme:sos:blr-1
+              createdAt: '2026-10-30T09:16:00Z'
+              payload: { tripId: '42', note: panic button }
+      responses:
+        '201': { $ref: '#/components/responses/Published' }
+        '200': { $ref: '#/components/responses/Duplicate' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '413': { $ref: '#/components/responses/TooLarge' }
+        '500': { $ref: '#/components/responses/Internal' }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+  /v1/dev/token:
+    post:
+      tags: [dev]
+      operationId: devToken
+      summary: Mint a signed token for any principal
+      description: |
+        Exists for demos and load tests and is only registered when
+        `DEV_TOKENS=true`. Anyone who can reach it can mint any token.
+        Pass the token to the WebSocket as `?token=` or `Authorization: Bearer`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/TokenRequest' }
+            examples:
+              employee:
+                value: { tenant: acme, sub: alice, role: employee }
+              security:
+                value: { tenant: acme, sub: desk-1, role: security, officeId: blr-1 }
+              officeAdmin:
+                value: { tenant: acme, sub: adm-1, role: office_admin, officeId: blr-1, ttlSeconds: 3600 }
+      responses:
+        '200':
+          description: Token issued.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenResponse' }
+        '400':
+          description: '`invalid_json` or `invalid_request` (missing tenant/sub, unknown role, office_admin without officeId).'
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example: { code: invalid_request, message: 'need tenant, sub and a role of employee, office_admin, security or operator; office_admin needs officeId' }
+        '404':
+          description: Dev tokens are switched off.
+
+  /healthz:
+    get:
+      tags: [ops]
+      operationId: health
+      summary: Readiness
+      description: |
+        On a gateway or the publisher, 200 when Redis answers within 1 s.
+        Through nginx on :8080 this path is answered by nginx itself
+        (`ok` as text); use :8091-8093 to reach a gateway directly.
+      servers:
+        - url: http://localhost:8091
+          description: gateway-1 directly
+        - url: http://localhost:8080
+          description: nginx
+      responses:
+        '200':
+          description: Ready.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { type: string, const: ok }
+        '503': { $ref: '#/components/responses/Unavailable' }
+
+components:
+  schemas:
+    Topic:
+      type: string
+      description: '`t:{tenant}:{kind}:{id}` with kind one of cab, trip, office, sos.'
+      pattern: '^t:[^:{}\s]{1,128}:(cab|trip|office|sos):[^:{}\s]{1,128}$'
+      examples: ['t:acme:trip:42', 't:acme:sos:blr-1']
+
+    PublishRequest:
+      type: object
+      additionalProperties: false
+      required: [eventId, tenant, cabId, topic, kind]
+      properties:
+        eventId:
+          type: string
+          description: Client-chosen id; the idempotency key per topic.
+        tenant:
+          type: string
+          description: Must match the topic's tenant.
+        cabId: { type: string }
+        topic: { $ref: '#/components/schemas/Topic' }
+        kind:
+          type: string
+          enum: [status, location, sos]
+          description: Optional on /v1/sos.
+        createdAt:
+          type: string
+          format: date-time
+          description: When the cab produced the event; used for end-to-end latency.
+        payload:
+          description: Any JSON value, delivered to subscribers as-is. Never logged by the server.
+
+    PublishResponse:
+      type: object
+      required: [eventId, topic, kind, duplicate]
+      properties:
+        eventId: { type: string }
+        topic: { $ref: '#/components/schemas/Topic' }
+        kind: { type: string, enum: [status, location, sos] }
+        seq:
+          type: integer
+          minimum: 1
+          description: Position on the topic; set for status and sos.
+        ver:
+          type: integer
+          minimum: 1
+          description: Version on the topic; set for location.
+        duplicate:
+          type: boolean
+          description: True when this eventId was already published on the topic.
+
+    TokenRequest:
+      type: object
+      additionalProperties: false
+      required: [tenant, sub, role]
+      properties:
+        tenant: { type: string }
+        sub: { type: string, description: User id. }
+        role: { type: string, enum: [employee, office_admin, security, operator] }
+        officeId: { type: string, description: Required for office_admin; optional for security. }
+        ttlSeconds:
+          type: integer
+          description: 0 or absent means 1 hour; capped at 24 hours.
+
+    TokenResponse:
+      type: object
+      required: [token, expiresAt]
+      properties:
+        token: { type: string, description: HS256 JWT. }
+        expiresAt: { type: string, format: date-time }
+
+    Error:
+      type: object
+      required: [code, message]
+      description: Every error body. `message` is for humans and never carries internal details.
+      properties:
+        code:
+          type: string
+          enum: [invalid_json, invalid_event, invalid_request, body_too_large, busy, unavailable, internal]
+        message: { type: string }
+
+  headers:
+    Retry-After:
+      description: Seconds to wait before retrying with the same eventId.
+      schema: { type: integer, example: 1 }
+
+  responses:
+    Published:
+      description: Stored and sequenced for the first time.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PublishResponse' }
+          example: { eventId: 7f3c2a90-5b1e-4c3e-9f0a-1d2e3f4a5b6c, topic: 't:acme:trip:42', kind: status, seq: 18, duplicate: false }
+    Duplicate:
+      description: Already published with this eventId; nothing stored, the original position is returned.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/PublishResponse' }
+          example: { eventId: 7f3c2a90-5b1e-4c3e-9f0a-1d2e3f4a5b6c, topic: 't:acme:trip:42', kind: status, seq: 18, duplicate: true }
+    BadRequest:
+      description: Invalid JSON, unknown field (including seq/ver), missing field, bad topic or tenant mismatch.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: invalid_event, message: 'bad event: cabId is required' }
+    TooLarge:
+      description: Body over 16 KiB.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: body_too_large, message: request body is too large }
+    Internal:
+      description: Unexpected failure.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          example: { code: internal, message: internal error }
+    Unavailable:
+      description: Overloaded (`busy`) or Redis unreachable (`unavailable`). Retry after the header's delay with the same eventId.
+      headers:
+        Retry-After: { $ref: '#/components/headers/Retry-After' }
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+          examples:
+            busy:
+              value: { code: busy, message: too many events in flight; retry with the same eventId }
+            unavailable:
+              value: { code: unavailable, message: event store unavailable; retry with the same eventId }

@@ -1,0 +1,374 @@
+{
+  "info": {
+    "name": "LiveTrip",
+    "description": "Live trip updates over WebSocket: HTTP publish API, SOS, dev tokens and health.\n\nRun the stack first: `make up` (nginx on http://localhost:8080). Run **Get token** first; it saves `token` to the collection variables.\n\n## WebSocket (open it by hand)\nCollection v2.1 cannot store WebSocket requests. In Postman: **New \u2192 WebSocket**, URL:\n\n    ws://localhost:8080/ws?token={{token}}\n\n(or leave the query out and add the header `Authorization: Bearer {{token}}`). Click **Connect**. The first frame is\n`{\"type\":\"hello\",\"node\":\"gateway-2\"}`, naming the gateway you landed on.\n\nMessages you can send (JSON text):\n\n    {\"op\":\"subscribe\",\"topic\":\"t:acme:trip:42\",\"lastSeq\":0}\n    {\"op\":\"subscribe\",\"topic\":\"t:acme:trip:42\",\"lastSeq\":17}\n    {\"op\":\"unsubscribe\",\"topic\":\"t:acme:trip:42\"}\n    {\"op\":\"ack\",\"topic\":\"t:acme:trip:42\",\"lastSeq\":18}\n\n- `lastSeq` 0 \u2192 a snapshot (newest event per cab and kind); > 0 \u2192 replay of exactly the status/SOS events after it.\n- Server frames: `subscribed` (with `resume` replay|snapshot and `asOfSeq`, sent before any event of the topic),\n  `event`, `unsubscribed`, `error` (bad request, connection stays open).\n- `ack` is informational and gets no reply.\n- Close codes: 4001 bad/expired token, 4003 topic not allowed (e.g. other tenant), 4008 slow consumer,\n  1013 try again later, 1001 server shutting down.\n\nThe **Get token** request issues an employee token for `alice`, who rides trip 42 in tenant `acme`. Then send\n**Publish status** and watch the event arrive on the socket.\n",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "Get token",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/dev/token",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "dev",
+            "token"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tenant\": \"acme\",\n  \"sub\": \"alice\",\n  \"role\": \"employee\",\n  \"ttlSeconds\": 3600\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "Dev only (DEV_TOKENS=true). Saves the token to the collection variable `token` for the WebSocket."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 with a token', () => {",
+              "  pm.response.to.have.status(200);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.token).to.be.a('string');",
+              "  pm.collectionVariables.set('token', body.token);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Publish status",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/events",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "events"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"{{$guid}}\",\n  \"tenant\": \"acme\",\n  \"cabId\": \"cab-7\",\n  \"topic\": \"t:acme:trip:42\",\n  \"kind\": \"status\",\n  \"createdAt\": \"{{$isoTimestamp}}\",\n  \"payload\": { \"status\": \"arrived\" }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "Reliable event: gets the next `seq` on the topic."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('201 with a seq', () => {",
+              "  pm.response.to.have.status(201);",
+              "  pm.expect(pm.response.json().seq).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Publish location",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/events",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "events"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"{{$guid}}\",\n  \"tenant\": \"acme\",\n  \"cabId\": \"cab-7\",\n  \"topic\": \"t:acme:trip:42\",\n  \"kind\": \"location\",\n  \"createdAt\": \"{{$isoTimestamp}}\",\n  \"payload\": { \"lat\": 12.9716, \"lng\": 77.5946 }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "Conflatable event: gets a `ver`; subscribers keep only the newest per cab."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('201 with a ver', () => {",
+              "  pm.response.to.have.status(201);",
+              "  pm.expect(pm.response.json().ver).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Duplicate publish (same eventId twice)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/events",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "events"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"{{dupEventId}}\",\n  \"tenant\": \"acme\",\n  \"cabId\": \"cab-7\",\n  \"topic\": \"t:acme:trip:42\",\n  \"kind\": \"status\",\n  \"createdAt\": \"{{$isoTimestamp}}\",\n  \"payload\": { \"status\": \"picked_up\" }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "Sends the same eventId twice: the first gets 201, the retry gets 200 with `duplicate: true` and the same seq. The pre-request script picks a fresh eventId and sends the first copy; this request is the retry."
+      },
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const id = pm.variables.replaceIn('{{$guid}}');",
+              "pm.collectionVariables.set('dupEventId', id);",
+              "const body = pm.variables.replaceIn(pm.request.body.raw.replace('{{dupEventId}}', id));",
+              "pm.sendRequest({",
+              "  url: pm.variables.replaceIn('{{baseUrl}}/v1/events'),",
+              "  method: 'POST',",
+              "  header: { 'Content-Type': 'application/json' },",
+              "  body: { mode: 'raw', raw: body },",
+              "}, (err, res) => {",
+              "  pm.collectionVariables.set('dupFirstStatus', err ? 0 : res.code);",
+              "  pm.collectionVariables.set('dupFirstSeq', err ? 0 : res.json().seq);",
+              "});"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('first copy was 201', () => {",
+              "  pm.expect(Number(pm.collectionVariables.get('dupFirstStatus'))).to.eql(201);",
+              "});",
+              "pm.test('retry is 200 duplicate with the same seq', () => {",
+              "  pm.response.to.have.status(200);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.duplicate).to.eql(true);",
+              "  pm.expect(body.seq).to.eql(Number(pm.collectionVariables.get('dupFirstSeq')));",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "SOS",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/sos",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "sos"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"{{$guid}}\",\n  \"tenant\": \"acme\",\n  \"cabId\": \"cab-7\",\n  \"topic\": \"t:acme:sos:blr-1\",\n  \"createdAt\": \"{{$isoTimestamp}}\",\n  \"payload\": { \"tripId\": \"42\", \"note\": \"panic button\" }\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "`kind` may be omitted on this endpoint. Goes through its own Redis pool and pub/sub connection."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('201 sos with a seq', () => {",
+              "  pm.response.to.have.status(201);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.kind).to.eql('sos');",
+              "  pm.expect(body.seq).to.be.above(0);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Invalid event (400)",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "url": {
+          "raw": "{{baseUrl}}/v1/events",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "v1",
+            "events"
+          ]
+        },
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"eventId\": \"{{$guid}}\",\n  \"tenant\": \"acme\",\n  \"topic\": \"t:acme:trip:42\",\n  \"kind\": \"status\",\n  \"seq\": 99\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "description": "No cabId, and a `seq`, which only the server assigns. Rejected with the `{code, message}` error body."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('400 with code and message', () => {",
+              "  pm.response.to.have.status(400);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.code).to.eql('invalid_event');",
+              "  pm.expect(body.message).to.be.a('string');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "Health check (gateway-1)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{gatewayUrl}}/healthz",
+          "host": [
+            "{{gatewayUrl}}"
+          ],
+          "path": [
+            "healthz"
+          ]
+        },
+        "description": "Through nginx (:8080) /healthz is answered by nginx itself, so this calls gateway-1 directly on :8091."
+      },
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('200 ok', () => {",
+              "  pm.response.to.have.status(200);",
+              "  pm.expect(pm.response.json().status).to.eql('ok');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:8080"
+    },
+    {
+      "key": "gatewayUrl",
+      "value": "http://localhost:8091"
+    },
+    {
+      "key": "token",
+      "value": ""
+    },
+    {
+      "key": "dupEventId",
+      "value": ""
+    },
+    {
+      "key": "dupFirstStatus",
+      "value": ""
+    },
+    {
+      "key": "dupFirstSeq",
+      "value": ""
+    }
+  ]
+}

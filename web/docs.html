@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LiveTrip HTTP API</title>
+  <style>body { margin: 0; background: #212121; }</style>
+</head>
+<body>
+  <div id="app"></div>
+  <!-- Pinned: a new Scalar release cannot change this page without a commit. -->
+  <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@1.74.0/dist/browser/standalone.js"></script>
+  <script>
+    Scalar.createApiReference('#app', {
+      url: '/openapi.yaml',
+      darkMode: true,
+      hideDownloadButton: false,
+      servers: [{ url: window.location.origin, description: 'This host (nginx)' }],
+    });
+  </script>
+</body>
+</html>

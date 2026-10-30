@@ -2,6 +2,7 @@
 #   docker compose -f deploy/docker-compose.yml up -d --build    (or: make up)
 #
 #   http://localhost:8080   nginx: /ws -> gateways, /v1/... -> publisher
+#   http://localhost:8080/demo   live demo page; /docs   HTTP API reference
 #   http://localhost:8091-8093  gateway-1/2/3 directly (metrics, debugging)
 #   http://localhost:9090   prometheus
 #
@@ -69,6 +70,10 @@ services:
 
   gateway-1:
     <<: *gateway
+    environment:
+      <<: *app-env
+      ADDR: ":8080"
+      NODE_ID: gateway-1
     # Only gateway-1 builds the image; gateway-2/3 reuse the same tag.
     build:
       context: ..
@@ -79,6 +84,10 @@ services:
 
   gateway-2:
     <<: *gateway
+    environment:
+      <<: *app-env
+      ADDR: ":8080"
+      NODE_ID: gateway-2
     depends_on:
       redis:
         condition: service_healthy
@@ -89,6 +98,10 @@ services:
 
   gateway-3:
     <<: *gateway
+    environment:
+      <<: *app-env
+      ADDR: ":8080"
+      NODE_ID: gateway-3
     depends_on:
       redis:
         condition: service_healthy

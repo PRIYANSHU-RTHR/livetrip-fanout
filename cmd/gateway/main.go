@@ -19,6 +19,7 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 
+	"github.com/PRIYANSHU-RTHR/livetrip-fanout/api"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/auth"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/domain"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/eventlog/redis"
@@ -27,6 +28,7 @@ import (
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/obs"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/routing"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/service"
+	"github.com/PRIYANSHU-RTHR/livetrip-fanout/web"
 )
 
 type config struct {
@@ -36,6 +38,7 @@ type config struct {
 	devTokens bool
 	maxConns  int
 	logLevel  string
+	nodeID    string
 }
 
 func loadConfig() config {
@@ -46,6 +49,7 @@ func loadConfig() config {
 		devTokens: os.Getenv("DEV_TOKENS") == "true",
 		maxConns:  envInt("MAX_CONNS", handler.DefaultMaxConns),
 		logLevel:  env("LOG_LEVEL", "info"),
+		nodeID:    env("NODE_ID", hostname()),
 	}
 }
 
@@ -89,7 +93,7 @@ func run(logger *slog.Logger, cfg config) error {
 	subs := service.NewSubscriptions(auth.NewRoleAuthorizer(trips), hub, log,
 		service.SubscriptionsConfig{Metrics: metrics})
 	ws := handler.NewWSHandler(tokens, subs, logger,
-		handler.WSConfig{MaxConns: cfg.maxConns, Metrics: metrics, ConnMetrics: metrics})
+		handler.WSConfig{MaxConns: cfg.maxConns, Metrics: metrics, ConnMetrics: metrics, NodeID: cfg.nodeID})
 	metrics.Gauge("livetrip_ws_connections", "Open websocket connections on this node.",
 		func() float64 { return float64(ws.Conns()) })
 	metrics.Gauge("livetrip_topics_subscribed", "Topics with at least one subscriber on this node.",
@@ -106,6 +110,7 @@ func run(logger *slog.Logger, cfg config) error {
 		"redis": func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
 	}))
 	mux.Handle("GET /metrics", metrics.Handler())
+	handler.RegisterAssets(mux, assets()...)
 
 	// Websocket handlers outlive Server.Shutdown (it skips hijacked
 	// connections), so their request contexts hang off root and are
@@ -129,7 +134,7 @@ func run(logger *slog.Logger, cfg config) error {
 		// Without its bus the node would hold clients that get no events.
 		go func() { errc <- fmt.Errorf("%s bus: %w", name, bus.Run(root, router)) }()
 	}
-	logger.Info("gateway listening", "addr", cfg.addr)
+	logger.Info("gateway listening", "addr", cfg.addr, "node", cfg.nodeID)
 
 	select {
 	case err := <-errc:
@@ -147,6 +152,16 @@ func run(logger *slog.Logger, cfg config) error {
 	return ws.Wait(shutdownCtx)
 }
 
+// assets are the pages served next to /ws: the demo, the API reference and
+// the OpenAPI file it renders.
+func assets() []handler.Asset {
+	return []handler.Asset{
+		{Path: "/demo", ContentType: "text/html; charset=utf-8", Body: web.Demo},
+		{Path: "/docs", ContentType: "text/html; charset=utf-8", Body: web.Docs},
+		{Path: "/openapi.yaml", ContentType: "application/yaml", Body: api.OpenAPI},
+	}
+}
+
 // demoTrips stands in for the trip service until one exists.
 func demoTrips() *auth.StaticTrips {
 	trips := auth.NewStaticTrips()
@@ -162,6 +177,14 @@ func env(key, def string) string {
 		return v
 	}
 	return def
+}
+
+func hostname() string {
+	h, err := os.Hostname()
+	if err != nil {
+		return "unknown"
+	}
+	return h
 }
 
 func envInt(key string, def int) int {

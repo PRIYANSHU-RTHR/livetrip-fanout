@@ -72,14 +72,21 @@ func (e *wsEnv) dial(t *testing.T, query string, header http.Header) *websocket.
 	return c
 }
 
+// dialAs connects as p and reads the hello frame.
 func (e *wsEnv) dialAs(t *testing.T, p domain.Principal) *websocket.Conn {
-	return e.dial(t, "?token="+e.token(t, p), nil)
+	t.Helper()
+	c := e.dial(t, "?token="+e.token(t, p), nil)
+	if f := read(t, c); f.Type != "hello" {
+		t.Fatalf("first frame = %+v, want hello", f)
+	}
+	return c
 }
 
 var alice = domain.Principal{Tenant: "acme", UserID: "alice", Role: domain.RoleEmployee}
 
 type frame struct {
 	Type    string `json:"type"`
+	Node    string `json:"node"`
 	Topic   string `json:"topic"`
 	Code    string `json:"code"`
 	Resume  string `json:"resume"`
@@ -167,6 +174,20 @@ func TestWSSubscribeThenReceiveInOrder(t *testing.T) {
 func TestWSTokenInAuthorizationHeader(t *testing.T) {
 	env := newWSEnv(t, nil, WSConfig{})
 	c := env.dial(t, "", http.Header{"Authorization": {"Bearer " + env.token(t, alice)}})
+	read(t, c) // hello
+	send(t, c, "subscribe", "t:acme:trip:42")
+	if f := read(t, c); f.Type != "subscribed" {
+		t.Fatalf("got %+v, want subscribed", f)
+	}
+}
+
+// The hello frame names the node and comes before anything else.
+func TestWSHelloNamesNode(t *testing.T) {
+	env := newWSEnv(t, nil, WSConfig{NodeID: "gateway-2"})
+	c := env.dial(t, "?token="+env.token(t, alice), nil)
+	if f := read(t, c); f.Type != "hello" || f.Node != "gateway-2" {
+		t.Fatalf("first frame = %+v, want hello from gateway-2", f)
+	}
 	send(t, c, "subscribe", "t:acme:trip:42")
 	if f := read(t, c); f.Type != "subscribed" {
 		t.Fatalf("got %+v, want subscribed", f)
@@ -219,7 +240,8 @@ func TestWSConnectionLimitCloses1013(t *testing.T) {
 	send(t, first, "subscribe", "t:acme:trip:42")
 	read(t, first) // the first connection is fully set up
 
-	if code := readClose(t, env.dialAs(t, alice)); code != CloseTryAgainLater {
+	// Refused before auth, so no hello.
+	if code := readClose(t, env.dial(t, "?token="+env.token(t, alice), nil)); code != CloseTryAgainLater {
 		t.Fatalf("code = %d, want %d", code, CloseTryAgainLater)
 	}
 }

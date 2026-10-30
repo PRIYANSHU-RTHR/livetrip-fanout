@@ -1,0 +1,656 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>livetrip demo</title>
+<style>
+  :root {
+    --bg: #212121;
+    --text: #e6e6e6;
+    --grey: #9a9a9a;
+    --line: #444;
+    --red: #d25b53;
+    --green: #87f84f;
+    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--text); }
+  body { font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 12px 16px; }
+  h1 { font-size: 15px; font-weight: 600; margin: 0; }
+  a { color: var(--grey); }
+
+  button, .toggle {
+    font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
+    border-radius: 4px; padding: 4px 10px; cursor: pointer; white-space: nowrap; flex: none;
+  }
+  button:hover:not(:disabled), .toggle:hover { border-color: var(--grey); }
+  button:disabled { color: var(--grey); cursor: default; }
+  button.sos { color: var(--red); }
+  .toggle { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
+  .toggle input { accent-color: var(--grey); margin: 0; }
+
+  .top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
+  .controls { border: 1px solid var(--line); border-radius: 4px; padding: 8px; margin-bottom: 8px; }
+  .btns { display: flex; gap: 6px; overflow-x: auto; }
+  .ctl-log { list-style: none; margin: 6px 0 0; padding: 0; color: var(--grey); min-height: 4.2em; }
+
+  .panels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  @media (max-width: 1100px) { .panels { grid-template-columns: 1fr; } }
+  .panel { border: 1px solid var(--line); border-radius: 4px; padding: 8px; min-width: 0; }
+  .panel.flash-sos { border-color: var(--red); }
+
+  .p-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
+  .p-title { font-weight: 600; }
+  .p-role { color: var(--grey); }
+  .p-node { margin-left: auto; font-family: var(--mono); font-size: 12px; padding: 0 4px; border-radius: 4px; }
+  .p-node.changed { background: var(--text); color: var(--bg); }
+
+  .rows { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); font: 12px/1.5 var(--mono); }
+  .rows div { display: grid; grid-template-columns: 13ch 9ch minmax(0, 1fr); column-gap: 1ch; }
+  .rows .dim { color: var(--grey); }
+
+  .p-log {
+    list-style: none; margin: 6px 0 0; padding: 6px 0 0; border-top: 1px solid var(--line);
+    font: 12px/1.5 var(--mono); height: 360px; overflow-y: auto;
+  }
+  .p-log li { display: grid; grid-template-columns: 9ch minmax(0, 1fr); column-gap: 1ch; }
+  .p-log.multi li { grid-template-columns: 9ch minmax(0, 1fr) 13ch; }
+  .ctl-log li { display: grid; grid-template-columns: 9ch minmax(0, 1fr); column-gap: 1ch; }
+  .c-time, .c-topic { color: var(--grey); }
+
+  /* Colour means something: green = newest live event, red = SOS or a close. */
+  .live { color: var(--green); }
+  .sosl, .close { color: var(--red); }
+  .dim { color: var(--grey); }
+
+  footer { margin-top: 8px; color: var(--grey); font-size: 12px; }
+  footer code { font-family: var(--mono); }
+</style>
+</head>
+<body>
+
+<div class="top">
+  <h1>livetrip demo</h1>
+  <a href="/docs">HTTP API reference</a>
+</div>
+
+<section class="controls" aria-label="Controls">
+  <div class="btns">
+    <button id="b-status">Publish status</button>
+    <button id="b-loc">Publish location</button>
+    <button id="b-sos" class="sos">Send SOS</button>
+    <button id="b-lift">Phone in a lift (40 s)</button>
+    <button id="b-xt">Cross-tenant attempt</button>
+    <label class="toggle"><input type="checkbox" id="b-auto"> Auto-publish</label>
+  </div>
+  <ol class="ctl-log" id="ctl-log" aria-live="polite"></ol>
+</section>
+
+<main class="panels" id="panels"></main>
+
+<footer>
+  Client rules: status/SOS with <code>seq &lt;= lastSeq</code> are dropped; a location is applied only if its
+  <code>ver</code> is newer; a seq gap or any close except 4001/4003 reconnects with exponential backoff and
+  full jitter, then resubscribes with the stored <code>lastSeq</code>.
+</footer>
+
+<template id="panel-tpl">
+  <article class="panel">
+    <div class="p-head">
+      <span class="p-title"></span>
+      <span class="p-role"></span>
+      <span class="p-node">idle</span>
+    </div>
+    <div class="rows p-topics"></div>
+    <div class="rows p-locs"></div>
+    <ol class="p-log"></ol>
+  </article>
+</template>
+
+<script>
+'use strict';
+
+const TENANT = 'acme';
+const OFFICE = 'blr-1';
+const CAB = 'cab-7';
+const TOPIC = {
+  trip: `t:${TENANT}:trip:42`,
+  office: `t:${TENANT}:office:${OFFICE}`,
+  sos: `t:${TENANT}:sos:${OFFICE}`,
+};
+
+const BACKOFF_BASE_MS = 300;
+const BACKOFF_CAP_MS = 10000;
+const LIFT_SECONDS = 40;
+const LOG_LINES = 250;
+const CTL_LINES = 3;
+const TOKEN_TTL_S = 3600;
+
+const CLOSE_MEANING = {
+  1000: 'normal closure',
+  1001: 'server shutting down',
+  1005: 'no status code',
+  1006: 'dropped without a close frame (node killed?)',
+  1011: 'server internal error',
+  1013: 'try again later',
+  4001: 'unauthenticated',
+  4003: 'forbidden',
+  4008: 'slow consumer',
+};
+// Retrying these cannot succeed without a new token or new rights.
+const NO_RETRY = new Set([4001, 4003]);
+
+const STATUSES = ['driver_assigned', 'en_route', 'arrived', 'picked_up', 'in_transit', 'dropped'];
+
+// ---- helpers ----
+
+function el(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
+function clock(d = new Date()) {
+  return d.toTimeString().slice(0, 8);
+}
+
+// "t:acme:trip:42" -> "trip:42"
+function short(topic) {
+  return topic.split(':').slice(2).join(':');
+}
+
+function closeMeaning(code) {
+  return CLOSE_MEANING[code] || (code >= 4000 ? 'application close' : 'unknown');
+}
+
+function newId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return Array.from(crypto.getRandomValues(new Uint8Array(16)), b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function wsURL(token) {
+  // Browsers cannot set headers on a websocket, so the token goes in the
+  // socket's query string. It is never put in the page URL or on screen.
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${proto}//${location.host}/ws?token=${encodeURIComponent(token)}`;
+}
+
+async function postJSON(path, body) {
+  const res = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let data = null;
+  try { data = await res.json(); } catch { /* empty or non-JSON body */ }
+  return { status: res.status, data, retryAfter: res.headers.get('Retry-After') };
+}
+
+async function fetchToken(principal) {
+  const r = await postJSON('/v1/dev/token', { ...principal, ttlSeconds: TOKEN_TTL_S });
+  if (r.status !== 200 || !r.data || !r.data.token) {
+    throw new Error(`token request failed: HTTP ${r.status}`);
+  }
+  return r.data;
+}
+
+// appendLine adds one row (time + cells) at the top of list.
+function appendLine(list, max, cells, cls) {
+  const li = el('li', cls);
+  li.append(el('span', 'c-time', clock()));
+  cells.forEach((c, i) => li.append(el('span', i > 0 ? 'c-topic' : '', c)));
+  list.prepend(li);
+  while (list.children.length > max) list.lastChild.remove();
+  return li;
+}
+
+const ctlLog = document.getElementById('ctl-log');
+function ctl(text, cls = '') {
+  appendLine(ctlLog, CTL_LINES, [text], cls);
+}
+
+function row(...cells) {
+  const d = el('div');
+  for (const c of cells) d.append(el('span', c === '-' ? 'dim' : '', c));
+  return d;
+}
+
+// ---- one panel = one user, one websocket ----
+
+class Panel {
+  constructor(cfg) {
+    this.cfg = cfg;
+    this.multi = cfg.topics.length > 1;
+    this.topics = new Map(cfg.topics.map(t => [t, {
+      lastSeq: 0,   // newest reliable seq applied
+      floor: 0,     // seqs <= floor are catch-up; no gap check below it
+      resume: '',
+      asOf: 0,      // seqs <= asOf came from the catch-up, not live
+      latest: '',
+    }]));
+    this.locs = new Map(); // "topic|cab" -> newest location, for the ver check
+    this.ws = null;
+    this.tok = null;
+    this.node = '';
+    this.attempt = 0;
+    this.timer = null;
+    this.offline = false;
+    this.lift = false;
+    this.pending = new Set();
+    this.lastLive = null;
+    this.mount();
+  }
+
+  mount() {
+    const root = document.getElementById('panel-tpl').content.firstElementChild.cloneNode(true);
+    const p = this.cfg.principal;
+    root.querySelector('.p-title').textContent = this.cfg.title;
+    root.querySelector('.p-role').textContent = p.role + (p.officeId ? ' ' + p.officeId : ' ' + p.sub);
+    this.root = root;
+    this.nodeEl = root.querySelector('.p-node');
+    this.topicsEl = root.querySelector('.p-topics');
+    this.locsEl = root.querySelector('.p-locs');
+    this.logEl = root.querySelector('.p-log');
+    if (this.multi) this.logEl.classList.add('multi');
+    document.getElementById('panels').append(root);
+    this.renderTopics();
+    this.renderLocs();
+  }
+
+  // log adds one event-log row; the topic column exists only when the
+  // panel watches more than one topic.
+  log(what, topic, cls) {
+    const cells = this.multi ? [what, topic ? short(topic) : ''] : [what];
+    return appendLine(this.logEl, LOG_LINES, cells, cls);
+  }
+
+  // live logs a new live event; only the newest one stays green.
+  live(what, topic) {
+    if (this.lastLive) this.lastLive.classList.remove('live');
+    this.lastLive = this.log(what, topic, 'live');
+  }
+
+  // setState shows the node when connected, otherwise what is going on.
+  setState(text) {
+    this.nodeEl.textContent = text;
+  }
+
+  renderTopics() {
+    this.topicsEl.replaceChildren(...[...this.topics].map(([topic, t]) =>
+      row(short(topic), `seq ${t.lastSeq}`, t.latest || '-')));
+  }
+
+  // One line per cab: the location that arrived last, from whichever topic.
+  renderLocs() {
+    const byCab = new Map();
+    for (const l of this.locs.values()) {
+      if (!byCab.has(l.cab) || l.at >= byCab.get(l.cab).at) byCab.set(l.cab, l);
+    }
+    if (byCab.size === 0) {
+      this.locsEl.replaceChildren(row('no location', '', ''));
+      this.locsEl.firstChild.className = 'dim';
+      return;
+    }
+    this.locsEl.replaceChildren(...[...byCab.values()].map(l => {
+      let pos = typeof l.lat === 'number' && typeof l.lng === 'number'
+        ? `${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}` : '-';
+      if (this.multi) pos += ` (${short(l.topic)})`;
+      return row(l.cab, `ver ${l.ver}`, pos);
+    }));
+  }
+
+  async token() {
+    if (this.tok && Date.parse(this.tok.expiresAt) - Date.now() > 5 * 60 * 1000) return this.tok.token;
+    this.tok = await fetchToken(this.cfg.principal);
+    return this.tok.token;
+  }
+
+  async connect() {
+    clearTimeout(this.timer);
+    this.timer = null;
+    this.setState('connecting');
+    let token;
+    try {
+      token = await this.token();
+    } catch (e) {
+      this.log(e.message, '', 'dim');
+      return this.retry();
+    }
+    if (this.offline) return; // the lift started while the token was fetched
+
+    const ws = new WebSocket(wsURL(token));
+    this.ws = ws;
+    this.pending = new Set(this.topics.keys());
+    ws.onopen = () => {
+      if (ws !== this.ws) return;
+      for (const [topic, t] of this.topics) {
+        ws.send(JSON.stringify({ op: 'subscribe', topic, lastSeq: t.lastSeq }));
+      }
+    };
+    ws.onmessage = m => {
+      if (ws !== this.ws) return;
+      let f;
+      try { f = JSON.parse(m.data); } catch { return this.log('unreadable frame', '', 'dim'); }
+      this.onFrame(f);
+    };
+    ws.onclose = e => {
+      if (ws === this.ws) this.onClose(e);
+    };
+  }
+
+  onFrame(f) {
+    switch (f.type) {
+      case 'hello': return this.onHello(f);
+      case 'subscribed': return this.onSubscribed(f);
+      case 'event': return this.onEvent(f);
+      case 'unsubscribed': return this.log('unsubscribed', f.topic, 'dim');
+      case 'error': return this.log(`error ${f.code}: ${f.message}`, f.topic, 'dim');
+    }
+  }
+
+  onHello(f) {
+    const prev = this.node;
+    this.node = f.node || '?';
+    this.setState(this.node);
+    if (prev && prev !== this.node) {
+      this.nodeEl.classList.add('changed');
+      setTimeout(() => this.nodeEl.classList.remove('changed'), 3000);
+    }
+  }
+
+  onSubscribed(f) {
+    const t = this.topics.get(f.topic);
+    if (!t) return;
+    const asOf = f.asOfSeq || 0;
+    t.resume = f.resume;
+    t.asOf = asOf;
+    let how;
+    if (f.resume === 'snapshot') {
+      // New or too far behind: drop what we have and take the snapshot.
+      t.lastSeq = 0;
+      t.floor = asOf;
+      t.latest = '';
+      for (const [k, l] of this.locs) if (l.topic === f.topic) this.locs.delete(k);
+      how = `snapshot at seq ${asOf}`;
+    } else {
+      t.floor = t.lastSeq;
+      how = asOf > t.floor ? `replay ${t.floor + 1}-${asOf}` : 'replay: nothing missed';
+      if (this.lift && liftSent) how += `, page sent ${liftSent[f.topic] || 0} while offline`;
+    }
+    this.log(`subscribed ${short(f.topic)} (${how})`, '', '');
+    this.pending.delete(f.topic);
+    if (this.pending.size === 0) {
+      this.attempt = 0;
+      if (this.lift) liftSent = null;
+      this.lift = false;
+      this.setState(this.node);
+    }
+    this.renderTopics();
+    this.renderLocs();
+  }
+
+  onEvent(ev) {
+    const t = this.topics.get(ev.topic);
+    if (!t) return;
+    const p = ev.payload || {};
+
+    if (ev.kind === 'location') {
+      const key = ev.topic + '|' + ev.cabId;
+      const cur = this.locs.get(key);
+      if (cur && ev.ver <= cur.ver) {
+        this.log(`ver ${ev.ver} location ${ev.cabId} dropped (have ver ${cur.ver})`, ev.topic, 'dim');
+        return;
+      }
+      this.locs.set(key, { topic: ev.topic, cab: ev.cabId, ver: ev.ver, lat: p.lat, lng: p.lng, at: Date.now() });
+      this.live(`ver ${ev.ver} location ${ev.cabId}`, ev.topic);
+      this.renderLocs();
+      return;
+    }
+
+    const seq = ev.seq;
+    if (seq <= t.lastSeq) {
+      this.log(`seq ${seq} ${ev.kind} dropped (have seq ${t.lastSeq})`, ev.topic, 'dim');
+      return;
+    }
+    if (seq > t.floor) {
+      const want = Math.max(t.lastSeq, t.floor) + 1;
+      if (seq !== want) {
+        this.log(`gap: got seq ${seq}, expected ${want}; reconnecting`, ev.topic, '');
+        this.drop('seq gap');
+        return;
+      }
+    }
+    t.lastSeq = seq;
+
+    // Snapshot contents are summed up by the "subscribed" line.
+    const snap = t.resume === 'snapshot' && seq <= t.floor;
+    const caughtUp = seq <= t.asOf;
+    if (ev.kind === 'sos') {
+      const ms = Date.now() - Date.parse(ev.createdAt);
+      t.latest = `SOS ${ev.cabId}`;
+      if (!snap) {
+        const lat = caughtUp ? `raised ${(ms / 1000).toFixed(1)} s ago` : `${ms} ms`;
+        this.log(`SOS ${ev.cabId} · ${lat}`, ev.topic, 'sosl');
+        this.flashSOS();
+      }
+    } else {
+      t.latest = p.status || ev.kind;
+      if (!snap) {
+        const what = `seq ${seq} ${ev.kind}${p.status ? ' ' + p.status : ''}`;
+        if (caughtUp) this.log(what, ev.topic, '');
+        else this.live(what, ev.topic);
+      }
+    }
+    this.renderTopics();
+  }
+
+  flashSOS() {
+    this.root.classList.add('flash-sos');
+    setTimeout(() => this.root.classList.remove('flash-sos'), 1500);
+  }
+
+  onClose(e) {
+    this.ws = null;
+    this.log(`close ${e.code} ${closeMeaning(e.code)}`, '', 'close');
+    if (this.offline) return;
+    if (NO_RETRY.has(e.code)) {
+      this.setState(`closed ${e.code}`);
+      this.log('not reconnecting: it would be refused again', '', 'close');
+      return;
+    }
+    this.retry();
+  }
+
+  // drop closes the socket on purpose (seq gap) and reconnects.
+  drop(reason) {
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) ws.close(1000, reason);
+    this.retry();
+  }
+
+  // retry waits a random time in [0, min(cap, base * 2^attempt)): full
+  // jitter, so clients of a dead node do not all come back at once.
+  retry() {
+    if (this.offline || this.timer) return;
+    const ceil = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** this.attempt);
+    const delay = Math.floor(Math.random() * ceil);
+    this.attempt++;
+    this.setState('reconnecting');
+    this.log(`reconnect #${this.attempt} in ${delay} ms`, '', 'dim');
+    this.timer = setTimeout(() => { this.timer = null; this.connect(); }, delay);
+  }
+
+  goOffline() {
+    this.offline = true;
+    clearTimeout(this.timer);
+    this.timer = null;
+    const ws = this.ws;
+    this.ws = null;
+    if (ws) ws.close(1000, 'phone in a lift');
+    const seqs = [...this.topics].map(([tp, t]) => `${short(tp)} seq ${t.lastSeq}`).join(', ');
+    this.log(`offline (in a lift), keeping ${seqs}`, '', '');
+  }
+
+  goOnline() {
+    this.offline = false;
+    this.lift = true;
+    this.attempt = 0;
+    this.log('back online, resuming', '', '');
+    this.connect();
+  }
+}
+
+// ---- the three users ----
+
+const desk = new Panel({
+  title: 'Security desk',
+  principal: { tenant: TENANT, sub: 'desk-blr-1', role: 'security', officeId: OFFICE },
+  topics: [TOPIC.sos, TOPIC.office],
+});
+const phone = new Panel({
+  title: 'Employee phone',
+  principal: { tenant: TENANT, sub: 'alice', role: 'employee' },
+  topics: [TOPIC.trip],
+});
+const admin = new Panel({
+  title: 'Office admin',
+  principal: { tenant: TENANT, sub: 'admin-blr-1', role: 'office_admin', officeId: OFFICE },
+  topics: [TOPIC.office, TOPIC.trip],
+});
+const panels = [desk, phone, admin];
+
+// ---- publishing (as the cab would) ----
+
+let statusIdx = 0;
+let angle = 0;
+// Reliable events this page published to each topic during the lift.
+let liftSent = null;
+
+async function publish(path, topic, kind, payload) {
+  const body = {
+    eventId: newId(), tenant: TENANT, cabId: CAB, topic, kind,
+    createdAt: new Date().toISOString(), payload,
+  };
+  try {
+    const r = await postJSON(path, body);
+    if (r.status === 201 && kind !== 'location' && liftSent) liftSent[topic] = (liftSent[topic] || 0) + 1;
+    return r;
+  } catch {
+    return { status: 0, data: null };
+  }
+}
+
+function result(topic, r) {
+  const where = short(topic);
+  if (r.status === 0) return `${where} network error`;
+  if (r.status === 200 || r.status === 201) {
+    const pos = r.data.seq ? `seq ${r.data.seq}` : `ver ${r.data.ver}`;
+    return `${where} ${r.status}${r.data.duplicate ? ' duplicate' : ''} ${pos}`;
+  }
+  const code = r.data && r.data.code ? ' ' + r.data.code : '';
+  return `${where} ${r.status}${code}${r.retryAfter ? `, retry after ${r.retryAfter} s` : ''}`;
+}
+
+const ok = r => r.status === 200 || r.status === 201;
+
+async function publishStatus() {
+  const status = STATUSES[statusIdx++ % STATUSES.length];
+  const rs = await Promise.all([TOPIC.trip, TOPIC.office].map(t => publish('/v1/events', t, 'status', { status })));
+  ctl(`status ${status}: ${result(TOPIC.trip, rs[0])}, ${result(TOPIC.office, rs[1])}`);
+}
+
+async function publishLocation(quiet) {
+  angle += 0.15;
+  const pos = {
+    lat: +(12.9716 + 0.01 * Math.sin(angle)).toFixed(5),
+    lng: +(77.5946 + 0.01 * Math.cos(angle)).toFixed(5),
+  };
+  const rs = await Promise.all([TOPIC.trip, TOPIC.office].map(t => publish('/v1/events', t, 'location', pos)));
+  if (!quiet || !rs.every(ok)) {
+    ctl(`location ${CAB}: ${result(TOPIC.trip, rs[0])}, ${result(TOPIC.office, rs[1])}`);
+  }
+}
+
+async function sendSOS() {
+  const r = await publish('/v1/sos', TOPIC.sos, 'sos', { tripId: '42', note: 'panic button' });
+  ctl(`SOS ${CAB}: ${result(TOPIC.sos, r)}`, 'sosl');
+}
+
+// ---- scenarios ----
+
+const liftBtn = document.getElementById('b-lift');
+function phoneInLift() {
+  liftBtn.disabled = true;
+  liftSent = {};
+  phone.goOffline();
+  ctl(`employee phone offline for ${LIFT_SECONDS} s; publish now, then watch the replay`);
+  let left = LIFT_SECONDS;
+  const tick = () => {
+    phone.setState(`in a lift ${left} s`);
+    liftBtn.textContent = `In a lift… ${left} s`;
+  };
+  tick();
+  const iv = setInterval(() => {
+    left--;
+    if (left > 0) return tick();
+    clearInterval(iv);
+    liftBtn.textContent = `Phone in a lift (${LIFT_SECONDS} s)`;
+    liftBtn.disabled = false;
+    phone.goOnline();
+  }, 1000);
+}
+
+async function crossTenant() {
+  ctl(`cross-tenant: globex token subscribes to ${TOPIC.trip}`);
+  let tok;
+  try {
+    tok = await fetchToken({ tenant: 'globex', sub: 'alice', role: 'employee' });
+  } catch (e) {
+    return ctl('cross-tenant: ' + e.message);
+  }
+  const ws = new WebSocket(wsURL(tok.token));
+  ws.onmessage = m => {
+    const f = JSON.parse(m.data);
+    if (f.type === 'hello') {
+      ws.send(JSON.stringify({ op: 'subscribe', topic: TOPIC.trip, lastSeq: 0 }));
+    } else {
+      ctl(`cross-tenant: unexpected ${f.type} frame`);
+    }
+  };
+  ws.onclose = e => {
+    const held = e.code === 4003;
+    ctl(`cross-tenant: close ${e.code} ${closeMeaning(e.code)}` +
+      (held ? ', tenant isolation held' : ''), 'close');
+  };
+}
+
+let autoTimer = null;
+let autoTick = 0;
+function setAuto(on) {
+  clearInterval(autoTimer);
+  autoTimer = null;
+  if (!on) return ctl('auto-publish off');
+  ctl('auto-publish on: a location every second, a status every 5 s');
+  autoTimer = setInterval(() => {
+    autoTick++;
+    publishLocation(true);
+    if (autoTick % 5 === 0) publishStatus();
+  }, 1000);
+}
+
+document.getElementById('b-status').onclick = publishStatus;
+document.getElementById('b-loc').onclick = () => publishLocation(false);
+document.getElementById('b-sos').onclick = sendSOS;
+liftBtn.onclick = phoneInLift;
+document.getElementById('b-xt').onclick = crossTenant;
+const autoBox = document.getElementById('b-auto');
+autoBox.checked = false; // a reload may restore the old form state
+autoBox.onchange = e => setAuto(e.target.checked);
+
+panels.forEach(p => p.connect());
+</script>
+</body>
+</html>
