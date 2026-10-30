@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -204,5 +205,40 @@ func waitFor(t *testing.T, cond func() bool) {
 			t.Fatal("condition not met in time")
 		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+type pubMetrics struct {
+	noMetrics
+	outcomes []string
+	retries  int
+}
+
+func (m *pubMetrics) Published(kind domain.EventKind, outcome string, _ time.Duration) {
+	m.outcomes = append(m.outcomes, string(kind)+":"+outcome)
+}
+func (m *pubMetrics) SOSRetried() { m.retries++ }
+
+func TestPublishMetrics(t *testing.T) {
+	log := memory.New(memory.Config{})
+	flaky := &stubLog{}
+	flaky.publish = func(context.Context, domain.Event) (uint64, bool, error) {
+		if flaky.calls.Load() == 1 {
+			return 0, false, errors.New("connection reset")
+		}
+		return 1, false, nil
+	}
+	m := &pubMetrics{}
+	p := NewPublisher(log, flaky, PublisherConfig{Metrics: m})
+	ctx := context.Background()
+
+	_, _ = p.Publish(ctx, event("s1", domain.KindStatus))
+	_, _ = p.Publish(ctx, event("s1", domain.KindStatus))
+	_, _ = p.Publish(ctx, event("sos-1", domain.KindSOS))
+	_, _ = p.Publish(ctx, event("x1", "teleport")) // client-chosen kind
+
+	want := "[status:ok status:duplicate sos:ok unknown:invalid]"
+	if got := fmt.Sprint(m.outcomes); got != want || m.retries != 1 {
+		t.Fatalf("outcomes = %s, retries = %d; want %s, 1", got, m.retries, want)
 	}
 }

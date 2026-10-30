@@ -55,7 +55,24 @@ type Config struct {
 	Timeout time.Duration
 	// MaxRepair is the longest gap fetched from the log and replayed.
 	MaxRepair int
+	// Metrics receives repairs and resyncs; nil means none.
+	Metrics Metrics
 }
+
+// Metrics records how often the broker lost events. obs.Metrics
+// implements it.
+type Metrics interface {
+	// GapRepaired is called after each repair: ok is false when the
+	// topic's subscribers had to be closed instead.
+	GapRepaired(ok bool)
+	// Resynced is called when a topic is resynced after a bus reconnect.
+	Resynced()
+}
+
+type noMetrics struct{}
+
+func (noMetrics) GapRepaired(bool) {}
+func (noMetrics) Resynced()        {}
 
 // Router forwards broker events to the hub in Seq order per topic.
 //
@@ -68,6 +85,7 @@ type Router struct {
 	logger    *slog.Logger
 	timeout   time.Duration
 	maxRepair int
+	metrics   Metrics
 
 	mu     sync.Mutex
 	topics map[domain.Topic]*topicState
@@ -91,6 +109,9 @@ func New(hub Hub, log Log, main, sos Bus, logger *slog.Logger, cfg Config) *Rout
 	if cfg.MaxRepair <= 0 {
 		cfg.MaxRepair = DefaultMaxRepair
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = noMetrics{}
+	}
 	return &Router{
 		hub:       hub,
 		log:       log,
@@ -99,6 +120,7 @@ func New(hub Hub, log Log, main, sos Bus, logger *slog.Logger, cfg Config) *Rout
 		logger:    logger,
 		timeout:   cfg.Timeout,
 		maxRepair: cfg.MaxRepair,
+		metrics:   cfg.Metrics,
 		topics:    make(map[domain.Topic]*topicState),
 	}
 }
@@ -197,6 +219,7 @@ func (r *Router) Resync(topic domain.Topic) {
 	if st == nil {
 		return
 	}
+	r.metrics.Resynced()
 	st.mu.Lock()
 	defer st.mu.Unlock()
 	if !r.repair(topic, st) {
@@ -231,6 +254,7 @@ func (r *Router) repair(topic domain.Topic, st *topicState) bool {
 	if err == nil && len(evs) > r.maxRepair {
 		err = errGapTooLong
 	}
+	r.metrics.GapRepaired(err == nil)
 	if err != nil {
 		n := r.hub.CloseTopic(topic, fanout.ErrResync)
 		r.logger.Warn("gap not repaired, subscribers must resume",

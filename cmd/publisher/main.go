@@ -19,6 +19,7 @@ import (
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/auth"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/eventlog/redis"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/handler"
+	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/obs"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/service"
 )
 
@@ -30,6 +31,7 @@ type config struct {
 	maxInFlight int
 	jwtSecret   string
 	devTokens   bool
+	logLevel    string
 }
 
 func loadConfig() config {
@@ -41,12 +43,14 @@ func loadConfig() config {
 		maxInFlight: envInt("MAX_IN_FLIGHT", service.DefaultMaxInFlight),
 		jwtSecret:   os.Getenv("JWT_SECRET"),
 		devTokens:   os.Getenv("DEV_TOKENS") == "true",
+		logLevel:    env("LOG_LEVEL", "info"),
 	}
 }
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := run(logger, loadConfig()); err != nil {
+	cfg := loadConfig()
+	logger := obs.NewLogger(os.Stdout, cfg.logLevel)
+	if err := run(logger, cfg); err != nil {
 		logger.Error("publisher stopped", "err", err)
 		os.Exit(1)
 	}
@@ -63,11 +67,14 @@ func run(logger *slog.Logger, cfg config) error {
 		MinIdleConns: cfg.sosPoolSize / 2, // kept open so an SOS never waits on a dial
 	})
 	defer sos.Close()
+	metrics := obs.NewMetrics()
+	events.AddHook(metrics.RedisHook("events"))
+	sos.AddHook(metrics.RedisHook("sos"))
 
 	pub := service.NewPublisher(
 		redis.New(events, redis.Config{}),
 		redis.New(sos, redis.Config{}),
-		service.PublisherConfig{MaxInFlight: cfg.maxInFlight},
+		service.PublisherConfig{MaxInFlight: cfg.maxInFlight, Metrics: metrics},
 	)
 
 	mux := http.NewServeMux()
@@ -85,10 +92,11 @@ func run(logger *slog.Logger, cfg config) error {
 		"redis":     func(ctx context.Context) error { return events.Ping(ctx).Err() },
 		"redis-sos": func(ctx context.Context) error { return sos.Ping(ctx).Err() },
 	}))
+	mux.Handle("GET /metrics", metrics.Handler())
 
 	srv := &http.Server{
 		Addr:              cfg.addr,
-		Handler:           mux,
+		Handler:           handler.Recover(logger, metrics, mux),
 		ReadHeaderTimeout: 2 * time.Second,
 		ReadTimeout:       5 * time.Second,
 		WriteTimeout:      5 * time.Second,

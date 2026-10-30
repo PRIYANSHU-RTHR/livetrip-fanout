@@ -24,6 +24,7 @@ import (
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/eventlog/redis"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/fanout"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/handler"
+	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/obs"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/routing"
 	"github.com/PRIYANSHU-RTHR/livetrip-fanout/internal/service"
 )
@@ -34,6 +35,7 @@ type config struct {
 	jwtSecret string
 	devTokens bool
 	maxConns  int
+	logLevel  string
 }
 
 func loadConfig() config {
@@ -43,12 +45,14 @@ func loadConfig() config {
 		jwtSecret: os.Getenv("JWT_SECRET"),
 		devTokens: os.Getenv("DEV_TOKENS") == "true",
 		maxConns:  envInt("MAX_CONNS", handler.DefaultMaxConns),
+		logLevel:  env("LOG_LEVEL", "info"),
 	}
 }
 
 func main() {
-	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
-	if err := run(logger, loadConfig()); err != nil {
+	cfg := loadConfig()
+	logger := obs.NewLogger(os.Stdout, cfg.logLevel)
+	if err := run(logger, cfg); err != nil {
 		logger.Error("gateway stopped", "err", err)
 		os.Exit(1)
 	}
@@ -59,8 +63,10 @@ func run(logger *slog.Logger, cfg config) error {
 	if err != nil {
 		return fmt.Errorf("JWT_SECRET: %w", err)
 	}
+	metrics := obs.NewMetrics()
 	rdb := goredis.NewClient(&goredis.Options{Addr: cfg.redisAddr})
 	defer rdb.Close()
+	rdb.AddHook(metrics.RedisHook("gateway"))
 
 	log := redis.New(rdb, redis.Config{})
 
@@ -77,11 +83,17 @@ func run(logger *slog.Logger, cfg config) error {
 		OnFirstSubscriber: func(t domain.Topic) error { return router.OnFirstSubscriber(t) },
 		OnLastUnsubscribe: func(t domain.Topic) { router.OnLastUnsubscribe(t) },
 	})
-	router = routing.New(hub, log, mainBus, sosBus, logger, routing.Config{})
+	router = routing.New(hub, log, mainBus, sosBus, logger, routing.Config{Metrics: metrics})
 
 	trips := auth.NewCachedTrips(demoTrips(), auth.CacheConfig{})
-	subs := service.NewSubscriptions(auth.NewRoleAuthorizer(trips), hub, log, service.SubscriptionsConfig{})
-	ws := handler.NewWSHandler(tokens, subs, logger, handler.WSConfig{MaxConns: cfg.maxConns})
+	subs := service.NewSubscriptions(auth.NewRoleAuthorizer(trips), hub, log,
+		service.SubscriptionsConfig{Metrics: metrics})
+	ws := handler.NewWSHandler(tokens, subs, logger,
+		handler.WSConfig{MaxConns: cfg.maxConns, Metrics: metrics, ConnMetrics: metrics})
+	metrics.Gauge("livetrip_ws_connections", "Open websocket connections on this node.",
+		func() float64 { return float64(ws.Conns()) })
+	metrics.Gauge("livetrip_topics_subscribed", "Topics with at least one subscriber on this node.",
+		func() float64 { return float64(hub.Topics()) })
 
 	mux := http.NewServeMux()
 	ws.Register(mux)
@@ -93,6 +105,7 @@ func run(logger *slog.Logger, cfg config) error {
 	mux.Handle("GET /healthz", handler.Health(logger, map[string]handler.HealthCheck{
 		"redis": func(ctx context.Context) error { return rdb.Ping(ctx).Err() },
 	}))
+	mux.Handle("GET /metrics", metrics.Handler())
 
 	// Websocket handlers outlive Server.Shutdown (it skips hijacked
 	// connections), so their request contexts hang off root and are
@@ -101,7 +114,7 @@ func run(logger *slog.Logger, cfg config) error {
 	defer cancelRoot()
 	srv := &http.Server{
 		Addr:              cfg.addr,
-		Handler:           mux,
+		Handler:           handler.Recover(logger, metrics, mux),
 		ReadHeaderTimeout: 2 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		BaseContext:       func(net.Listener) context.Context { return root },

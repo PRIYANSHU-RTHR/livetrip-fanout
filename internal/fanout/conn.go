@@ -41,6 +41,7 @@ type Sink interface {
 // touches the Sink.
 type Conn struct {
 	sink     Sink
+	metrics  Metrics
 	reliable chan domain.Event
 	catchup  chan domain.Event
 	locReady chan struct{}
@@ -59,8 +60,17 @@ type Conn struct {
 }
 
 func NewConn(sink Sink) *Conn {
+	return NewConnWithMetrics(sink, nil)
+}
+
+// NewConnWithMetrics is NewConn reporting to m; nil means no metrics.
+func NewConnWithMetrics(sink Sink, m Metrics) *Conn {
+	if m == nil {
+		m = noMetrics{}
+	}
 	return &Conn{
 		sink:     sink,
+		metrics:  m,
 		reliable: make(chan domain.Event, ReliableBuffer),
 		catchup:  make(chan domain.Event),
 		locReady: make(chan struct{}, 1),
@@ -101,6 +111,7 @@ func (c *Conn) Enqueue(ev domain.Event) error {
 
 	select {
 	case c.reliable <- ev:
+		c.metrics.ReliableQueued(len(c.reliable))
 		return nil
 	default:
 		c.Close(ErrSlowConsumer)
@@ -191,11 +202,15 @@ func (c *Conn) conflate(ev domain.Event) {
 		return // stale or duplicate
 	}
 	c.latest[ev.CabID] = ev
-	if !c.dirty[ev.CabID] {
+	replaced := c.dirty[ev.CabID]
+	if !replaced {
 		c.dirty[ev.CabID] = true
 		c.pending = append(c.pending, ev.CabID)
 	}
 	c.mu.Unlock()
+	if replaced {
+		c.metrics.LocationConflated()
+	}
 	c.signalLocation()
 }
 
@@ -235,7 +250,7 @@ func (c *Conn) Run(ctx context.Context) error {
 		case <-c.done:
 			return c.cause
 		case ev := <-c.reliable:
-			if err := c.write(ev); err != nil {
+			if err := c.writeLive(ev); err != nil {
 				return err
 			}
 			continue
@@ -250,7 +265,7 @@ func (c *Conn) Run(ctx context.Context) error {
 		case <-c.done:
 			return c.cause
 		case ev := <-c.reliable:
-			if err := c.write(ev); err != nil {
+			if err := c.writeLive(ev); err != nil {
 				return err
 			}
 		case ev := <-c.catchup:
@@ -263,12 +278,21 @@ func (c *Conn) Run(ctx context.Context) error {
 				c.signalLocation()
 			}
 			if ok {
-				if err := c.write(ev); err != nil {
+				if err := c.writeLive(ev); err != nil {
 					return err
 				}
 			}
 		}
 	}
+}
+
+// writeLive writes an event that came from the live lanes and reports it.
+func (c *Conn) writeLive(ev domain.Event) error {
+	if err := c.write(ev); err != nil {
+		return err
+	}
+	c.metrics.Delivered(ev)
+	return nil
 }
 
 func (c *Conn) write(ev domain.Event) error {

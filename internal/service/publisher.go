@@ -36,6 +36,8 @@ type PublisherConfig struct {
 	SOSTimeout time.Duration
 	// Now is the clock, replaceable in tests.
 	Now func() time.Time
+	// Metrics receives publish outcomes; nil means none.
+	Metrics PublishMetrics
 }
 
 // PublishResult is where the event landed. Seq is set for reliable kinds,
@@ -56,6 +58,7 @@ type Publisher struct {
 	timeout    time.Duration
 	sosTimeout time.Duration
 	now        func() time.Time
+	metrics    PublishMetrics
 }
 
 // NewPublisher wires the two lanes. events and sos may be the same log in
@@ -73,6 +76,9 @@ func NewPublisher(events, sos eventlog.Log, cfg PublisherConfig) *Publisher {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = noMetrics{}
+	}
 	return &Publisher{
 		events:     events,
 		sos:        sos,
@@ -80,12 +86,24 @@ func NewPublisher(events, sos eventlog.Log, cfg PublisherConfig) *Publisher {
 		timeout:    cfg.Timeout,
 		sosTimeout: cfg.SOSTimeout,
 		now:        cfg.Now,
+		metrics:    cfg.Metrics,
 	}
 }
 
 // Publish validates ev and stores it. Errors are domain.ErrBadEvent (caller's
 // fault), ErrBusy or ErrUnavailable (retry with the same eventId).
 func (p *Publisher) Publish(ctx context.Context, ev domain.Event) (PublishResult, error) {
+	start := time.Now()
+	res, err := p.publish(ctx, ev)
+	kind := ev.Kind
+	if !kind.Valid() {
+		kind = "unknown" // client input: never a label value as-is
+	}
+	p.metrics.Published(kind, publishOutcome(res, err), time.Since(start))
+	return res, err
+}
+
+func (p *Publisher) publish(ctx context.Context, ev domain.Event) (PublishResult, error) {
 	if ev.CreatedAt.IsZero() {
 		ev.CreatedAt = p.now().UTC()
 	}
@@ -114,6 +132,7 @@ func (p *Publisher) publishSOS(ctx context.Context, ev domain.Event) (PublishRes
 	defer cancel()
 	res, err := publishOnce(ctx, p.sos, ev)
 	if errors.Is(err, ErrUnavailable) && ctx.Err() == nil {
+		p.metrics.SOSRetried()
 		res, err = publishOnce(ctx, p.sos, ev)
 	}
 	return res, err

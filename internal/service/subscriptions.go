@@ -42,6 +42,8 @@ type SubscriptionsConfig struct {
 	AuthTimeout time.Duration
 	// ReadTimeout bounds reading the catch-up from the event log.
 	ReadTimeout time.Duration
+	// Metrics receives subscribe outcomes; nil means none.
+	Metrics SubscribeMetrics
 }
 
 // Subscriptions is the gateway's subscribe use case: authorize, attach the
@@ -59,6 +61,9 @@ func NewSubscriptions(authz auth.Authorizer, hub *fanout.Hub, log eventlog.Log, 
 	}
 	if cfg.ReadTimeout <= 0 {
 		cfg.ReadTimeout = DefaultReadTimeout
+	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = noMetrics{}
 	}
 	return &Subscriptions{authz: authz, hub: hub, log: log, cfg: cfg}
 }
@@ -83,6 +88,13 @@ func NewSubscriptions(authz auth.Authorizer, hub *fanout.Hub, log eventlog.Log, 
 // returned. On error c
 // is left detached from topic.
 func (s *Subscriptions) Subscribe(ctx context.Context, p domain.Principal, topic domain.Topic, lastSeq uint64,
+	c *fanout.Conn, confirm func(Resume) error) error {
+	err := s.subscribe(ctx, p, topic, lastSeq, c, confirm)
+	s.cfg.Metrics.Subscribed(subscribeOutcome(err))
+	return err
+}
+
+func (s *Subscriptions) subscribe(ctx context.Context, p domain.Principal, topic domain.Topic, lastSeq uint64,
 	c *fanout.Conn, confirm func(Resume) error) error {
 	if err := s.authorize(ctx, p, topic); err != nil {
 		return err
@@ -142,10 +154,15 @@ func (s *Subscriptions) read(ctx context.Context, topic domain.Topic, lastSeq ui
 	defer cancel()
 
 	resume = Resume{Mode: ResumeReplay, AsOfSeq: lastSeq}
+	metric := string(ResumeReplay)
 	if lastSeq > 0 {
 		events, err = s.log.After(ctx, topic, lastSeq)
 	}
 	if lastSeq == 0 || errors.Is(err, eventlog.ErrTrimmed) {
+		metric = string(ResumeSnapshot)
+		if lastSeq > 0 {
+			metric = ResumeSnapshotTrimmed
+		}
 		var snap eventlog.Snapshot
 		snap, err = s.log.Snapshot(ctx, topic)
 		resume, events = Resume{Mode: ResumeSnapshot, AsOfSeq: snap.AsOfSeq}, snap.Events
@@ -161,6 +178,7 @@ func (s *Subscriptions) read(ctx context.Context, topic domain.Topic, lastSeq ui
 	if err != nil {
 		return Resume{}, nil, nil, fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
+	s.cfg.Metrics.Resumed(metric)
 	return resume, events, locations, nil
 }
 

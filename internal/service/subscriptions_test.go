@@ -307,3 +307,37 @@ func TestSubscribeClosedConn(t *testing.T) {
 		t.Fatalf("err = %v, want ErrClosed", err)
 	}
 }
+
+type recMetrics struct {
+	noMetrics
+	subscribed, resumed []string
+}
+
+func (m *recMetrics) Subscribed(outcome string) { m.subscribed = append(m.subscribed, outcome) }
+func (m *recMetrics) Resumed(mode string)       { m.resumed = append(m.resumed, mode) }
+
+// An on-call engineer must tell "clients are being denied" from "clients
+// were away so long they lost their history".
+func TestSubscribeMetrics(t *testing.T) {
+	e := newMemEnv(t, memory.Config{MaxLen: 2})
+	m := &recMetrics{}
+	e.subs = NewSubscriptions(e.subs.authz, e.hub, e.log, SubscriptionsConfig{Metrics: m})
+	for range 5 {
+		e.publish(t, domain.KindStatus, "cab-1")
+	}
+
+	c, _ := connect(t)
+	e.subscribe(t, c, 0) // new client
+	c2, _ := connect(t)
+	e.subscribe(t, c2, 4) // replay of seq 5
+	c3, _ := connect(t)
+	e.subscribe(t, c3, 1) // seq 2 is trimmed
+	other := domain.Topic{Tenant: "globex", Kind: domain.TopicTrip, ID: "42"}
+	_ = e.subs.Subscribe(context.Background(), alice, other, 0, c, confirm)
+
+	wantSub := []string{OutcomeOK, OutcomeOK, OutcomeOK, OutcomeForbidden}
+	wantRes := []string{string(ResumeSnapshot), string(ResumeReplay), ResumeSnapshotTrimmed}
+	if fmt.Sprint(m.subscribed) != fmt.Sprint(wantSub) || fmt.Sprint(m.resumed) != fmt.Sprint(wantRes) {
+		t.Fatalf("subscribed = %v, resumed = %v; want %v, %v", m.subscribed, m.resumed, wantSub, wantRes)
+	}
+}

@@ -431,3 +431,40 @@ func TestConcurrentLanes(t *testing.T) {
 		}
 	}
 }
+
+type recMetrics struct {
+	mu      sync.Mutex
+	repairs []bool
+	resyncs int
+}
+
+func (m *recMetrics) GapRepaired(ok bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.repairs = append(m.repairs, ok)
+}
+
+func (m *recMetrics) Resynced() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.resyncs++
+}
+
+func TestRepairMetrics(t *testing.T) {
+	m := &recMetrics{}
+	e := newEnv(t, Config{Metrics: m})
+	e.subscribe(t, trip)
+
+	s1 := e.publish(t, trip, domain.KindStatus, "cab-1")
+	e.publish(t, trip, domain.KindStatus, "cab-1")
+	e.router.Deliver(s1)
+	e.router.Deliver(e.publish(t, trip, domain.KindStatus, "cab-1")) // gap at 2: repaired
+	e.router.Resync(trip)                                            // nothing missing: still a repair
+	e.log.set("After", true)
+	e.publish(t, trip, domain.KindStatus, "cab-1")
+	e.router.Deliver(e.publish(t, trip, domain.KindStatus, "cab-1")) // gap at 4: log down
+
+	if fmt.Sprint(m.repairs) != "[true true false]" || m.resyncs != 1 {
+		t.Fatalf("repairs = %v, resyncs = %d; want [true true false], 1", m.repairs, m.resyncs)
+	}
+}

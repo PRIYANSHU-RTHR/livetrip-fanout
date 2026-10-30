@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -48,6 +50,9 @@ var (
 	errOverloaded = errors.New("gateway at connection limit")
 	// errClientGone means the client closed or the read side failed.
 	errClientGone = errors.New("client went away")
+	// errPanic means handling a client message panicked. The client gets
+	// 1011 and reconnects; the details are logged only.
+	errPanic = errors.New("panic in websocket handler")
 )
 
 // TokenVerifier turns a bearer token into a principal.
@@ -77,6 +82,10 @@ type WSConfig struct {
 	// it waits for any sign of life before dropping the connection.
 	PingInterval time.Duration
 	PongTimeout  time.Duration
+	// Metrics receives closes and recovered panics; nil means none.
+	Metrics Metrics
+	// ConnMetrics is passed to each fanout.Conn; nil means none.
+	ConnMetrics fanout.Metrics
 }
 
 func (c *WSConfig) defaults() {
@@ -94,6 +103,9 @@ func (c *WSConfig) defaults() {
 	}
 	if c.PongTimeout <= 0 {
 		c.PongTimeout = DefaultPongTimeout
+	}
+	if c.Metrics == nil {
+		c.Metrics = noMetrics{}
 	}
 }
 
@@ -170,7 +182,7 @@ func (h *WSHandler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	h.active.Add(1)
 	defer h.active.Done()
-	sink := newWSSink(ws, h.cfg.WriteTimeout)
+	sink := newWSSink(ws, h.cfg.WriteTimeout, h.cfg.Metrics)
 
 	// Checked after the upgrade so a browser sees a close code; an HTTP
 	// status on a failed upgrade is invisible to its websocket API.
@@ -189,7 +201,7 @@ func (h *WSHandler) serve(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := r.Context()
-	conn := fanout.NewConn(sink)
+	conn := fanout.NewConnWithMetrics(sink, h.cfg.ConnMetrics)
 	s := &session{h: h, p: p, ws: ws, sink: sink, conn: conn, topics: make(map[domain.Topic]struct{})}
 
 	ws.SetReadLimit(maxClientMessage)
@@ -250,11 +262,12 @@ func closeFrame(cause error) (code int, reason string) {
 type wsSink struct {
 	ws           *websocket.Conn
 	writeTimeout time.Duration
+	metrics      Metrics
 	mu           sync.Mutex
 }
 
-func newWSSink(ws *websocket.Conn, writeTimeout time.Duration) *wsSink {
-	return &wsSink{ws: ws, writeTimeout: writeTimeout}
+func newWSSink(ws *websocket.Conn, writeTimeout time.Duration, m Metrics) *wsSink {
+	return &wsSink{ws: ws, writeTimeout: writeTimeout, metrics: m}
 }
 
 type eventFrame struct {
@@ -293,6 +306,7 @@ func (s *wsSink) send(v any) error {
 // reconnect and resume.
 func (s *wsSink) Close(cause error) error {
 	code, reason := closeFrame(cause)
+	s.metrics.WSClosed(closeLabel(reason))
 	_ = s.ws.WriteControl(websocket.CloseMessage,
 		websocket.FormatCloseMessage(code, reason), time.Now().Add(closeGrace))
 	return s.ws.Close()
@@ -329,9 +343,19 @@ func (s *session) extendRead() error {
 
 // readLoop handles client messages until the socket fails or a message
 // must end the connection; then it closes the connection with that cause.
+//
+// A panic while handling a message ends only this connection, not the
+// process: it is recovered here, logged and reported as errPanic.
 func (s *session) readLoop(ctx context.Context) {
 	cause := errClientGone
-	defer func() { s.conn.Close(cause) }()
+	defer func() {
+		if v := recover(); v != nil {
+			s.h.cfg.Metrics.Panicked("ws_reader")
+			s.h.log.Error("panic recovered", "route", "GET /ws", "panic", fmt.Sprint(v), "stack", string(debug.Stack()))
+			cause = errPanic
+		}
+		s.conn.Close(cause)
+	}()
 	for {
 		_, data, err := s.ws.ReadMessage()
 		if err != nil {
