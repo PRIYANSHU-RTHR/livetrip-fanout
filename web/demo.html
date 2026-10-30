@@ -4,85 +4,165 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>livetrip demo</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #212121;
-    --text: #e6e6e6;
-    --grey: #9a9a9a;
-    --line: #444;
-    --red: #d25b53;
-    --green: #87f84f;
-    --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    --bg: #0f0f0f;
+    --card: #171717;
+    --card-2: #1e1e1e;
+    --border: #262626;
+    --text: #ededed;
+    --muted: #a1a1a1;
+    --faint: #6b6b6b;
+    --green: #3fcf8e;
+    --blue: #7aa2f7;
+    --orange: #ff9e64;
+    --purple: #bb9af7;
+    --red: #f87171;
+    --amber: #fbbf24;
+    --sans: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; background: var(--bg); color: var(--text); }
-  body { font: 13px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; padding: 12px 16px; }
-  h1 { font-size: 15px; font-weight: 600; margin: 0; }
-  a { color: var(--grey); }
+  body { font: 14px/1.5 var(--sans); padding: 24px; max-width: 1600px; margin: 0 auto; }
+  .mono { font-family: var(--mono); }
 
-  button, .toggle {
-    font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line);
-    border-radius: 4px; padding: 4px 10px; cursor: pointer; white-space: nowrap; flex: none;
+  /* header */
+  .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+  .brand h1 { font-size: 22px; font-weight: 600; margin: 0; letter-spacing: -.01em; }
+  .brand p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+  .links { display: flex; gap: 8px; }
+  .btn-outline {
+    font-size: 13px; color: var(--text); text-decoration: none; padding: 5px 12px;
+    border: 1px solid var(--border); border-radius: 8px; transition: background .15s, border-color .15s;
   }
-  button:hover:not(:disabled), .toggle:hover { border-color: var(--grey); }
-  button:disabled { color: var(--grey); cursor: default; }
-  button.sos { color: var(--red); }
-  .toggle { display: inline-flex; align-items: center; gap: 6px; user-select: none; }
-  .toggle input { accent-color: var(--grey); margin: 0; }
+  .btn-outline:hover { background: var(--card-2); border-color: var(--faint); }
 
-  .top { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin-bottom: 8px; }
-  .controls { border: 1px solid var(--line); border-radius: 4px; padding: 8px; margin-bottom: 8px; }
-  .btns { display: flex; gap: 6px; overflow-x: auto; }
-  .ctl-log { list-style: none; margin: 6px 0 0; padding: 0; color: var(--grey); min-height: 4.2em; }
+  /* toolbar */
+  .toolbar { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 12px; margin-bottom: 16px; }
+  .btns { display: flex; gap: 8px; align-items: center; overflow-x: auto; }
+  button {
+    font: 500 13px var(--sans); color: var(--text); background: var(--card-2); border: 1px solid var(--border);
+    border-radius: 8px; padding: 7px 14px; cursor: pointer; white-space: nowrap; flex: none;
+    transition: background .15s, border-color .15s;
+  }
+  button:hover:not(:disabled) { background: #2a2a2a; border-color: #3a3a3a; }
+  button:disabled { color: var(--faint); cursor: default; }
+  button.sos { background: var(--red); border-color: var(--red); color: #1a0606; }
+  button.sos:hover:not(:disabled) { background: #fb8a8a; border-color: #fb8a8a; }
 
-  .panels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+  .switch { display: inline-flex; align-items: center; gap: 8px; margin-left: 4px; cursor: pointer; user-select: none; flex: none; font-size: 13px; color: var(--muted); }
+  .switch input {
+    appearance: none; -webkit-appearance: none; margin: 0; width: 34px; height: 20px; border-radius: 999px;
+    background: var(--border); position: relative; cursor: pointer; transition: background .15s;
+  }
+  .switch input::before {
+    content: ""; position: absolute; top: 3px; left: 3px; width: 14px; height: 14px; border-radius: 50%;
+    background: var(--muted); transition: transform .15s, background .15s;
+  }
+  .switch input:checked { background: rgba(63, 207, 142, .3); }
+  .switch input:checked::before { transform: translateX(14px); background: var(--green); }
+  .switch input:checked + span { color: var(--text); }
+
+  .ctl-log { list-style: none; margin: 10px 0 0; padding: 8px 10px; background: var(--card-2); border-radius: 8px; font: 12px/1.6 var(--mono); color: var(--muted); }
+  .ctl-log:empty { display: none; }
+  .ctl-log li { display: grid; grid-template-columns: 9ch minmax(0, 1fr); column-gap: 1ch; }
+  .ctl-log .err { color: var(--red); }
+
+  /* panels */
+  .panels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
   @media (max-width: 1100px) { .panels { grid-template-columns: 1fr; } }
-  .panel { border: 1px solid var(--line); border-radius: 4px; padding: 8px; min-width: 0; }
+  .panel {
+    background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px;
+    min-width: 0; max-height: 70vh; overflow-y: auto; transition: border-color .3s;
+  }
   .panel.flash-sos { border-color: var(--red); }
 
-  .p-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
-  .p-title { font-weight: 600; }
-  .p-role { color: var(--grey); }
-  .p-node { margin-left: auto; font-family: var(--mono); font-size: 12px; padding: 0 4px; border-radius: 4px; }
-  .p-node.changed { background: var(--text); color: var(--bg); }
-
-  .rows { margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--line); font: 12px/1.5 var(--mono); }
-  .rows div { display: grid; grid-template-columns: 13ch 9ch minmax(0, 1fr); column-gap: 1ch; }
-  .rows .dim { color: var(--grey); }
-
-  .p-log {
-    list-style: none; margin: 6px 0 0; padding: 6px 0 0; border-top: 1px solid var(--line);
-    font: 12px/1.5 var(--mono); height: 360px; overflow-y: auto;
+  .p-head { display: flex; align-items: center; gap: 8px; }
+  .p-title { font-size: 16px; font-weight: 600; }
+  .p-role { color: var(--muted); font-size: 13px; }
+  .pill {
+    margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px;
+    border: 1px solid var(--border); border-radius: 999px; font: 12px var(--mono); color: var(--muted); white-space: nowrap;
   }
-  .p-log li { display: grid; grid-template-columns: 9ch minmax(0, 1fr); column-gap: 1ch; }
-  .p-log.multi li { grid-template-columns: 9ch minmax(0, 1fr) 13ch; }
-  .ctl-log li { display: grid; grid-template-columns: 9ch minmax(0, 1fr); column-gap: 1ch; }
-  .c-time, .c-topic { color: var(--grey); }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+  .pill.ok { color: var(--green); border-color: rgba(63, 207, 142, .35); }
+  .pill.warn { color: var(--amber); border-color: rgba(251, 191, 36, .35); }
+  .pill.bad { color: var(--red); border-color: rgba(248, 113, 113, .35); }
+  .pill.changed { animation: pill-flash 1.6s ease-out; }
+  @keyframes pill-flash { 0%, 30% { background: rgba(63, 207, 142, .3); } 100% { background: transparent; } }
 
-  /* Colour means something: green = newest live event, red = SOS or a close. */
-  .live { color: var(--green); }
-  .sosl, .close { color: var(--red); }
-  .dim { color: var(--grey); }
+  .label { margin: 18px 0 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .rows > div { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .rows > div:last-child { border-bottom: 0; }
+  .topic { color: var(--blue); font: 13px var(--mono); }
+  .rows .topic.muted { color: var(--muted); font-size: 12px; }
+  .badge {
+    font: 500 12px var(--mono); color: var(--orange); background: rgba(255, 158, 100, .1);
+    border: 1px solid rgba(255, 158, 100, .25); border-radius: 6px; padding: 0 6px;
+  }
+  .coords { font: 12px var(--mono); color: var(--text); margin-left: auto; }
+  .latest { margin-left: auto; }
+  .empty { color: var(--faint); font-size: 13px; }
 
-  footer { margin-top: 8px; color: var(--grey); font-size: 12px; }
-  footer code { font-family: var(--mono); }
+  /* events: a code block */
+  .p-log {
+    list-style: none; margin: 0; padding: 8px 0; background: var(--card-2); border: 1px solid var(--border);
+    border-radius: 8px; font: 12px/1.6 var(--mono);
+  }
+  .p-log:empty::before { content: "No events yet. Press Publish status."; display: block; padding: 4px 12px; color: var(--muted); font-family: var(--sans); font-size: 13px; }
+  .p-log li {
+    display: grid; grid-template-columns: 8ch 10ch 7ch minmax(0, 1fr); column-gap: 1ch; align-items: baseline;
+    padding: 1px 12px; animation: fade-in .9s ease-out;
+  }
+  @keyframes fade-in { 0% { background: rgba(63, 207, 142, .18); opacity: .3; } 25% { opacity: 1; } 100% { background: transparent; } }
+  .p-log .time { color: var(--faint); }
+  .p-log .pos { color: var(--orange); }
+  .p-log .detail { color: var(--text); overflow-wrap: anywhere; }
+  .p-log .detail .topic { font-size: 12px; margin-left: 6px; }
+  .p-log li.dim .detail, .p-log li.dim .pos { color: var(--faint); }
+  .p-log li.sos .detail, .p-log li.close .detail { color: var(--red); }
+  .p-log li.warn .detail { color: var(--amber); }
+  .p-log li.live .detail { color: var(--green); }
+
+  .tag {
+    justify-self: start; font-size: 10.5px; font-weight: 500; line-height: 1.6; padding: 0 6px; border-radius: 4px;
+    text-transform: lowercase; color: var(--muted); background: rgba(161, 161, 161, .12);
+  }
+  .tag.k-status { color: var(--blue); background: rgba(122, 162, 247, .12); }
+  .tag.k-sos, .tag.k-close, .tag.k-error { color: var(--red); background: rgba(248, 113, 113, .12); }
+  .tag.k-subscribed, .tag.k-replay { color: var(--purple); background: rgba(187, 154, 247, .12); }
+  .tag.k-reconnect, .tag.k-gap { color: var(--amber); background: rgba(251, 191, 36, .12); }
+  .mark { color: var(--purple); margin-right: 6px; }
+
+  footer { margin-top: 20px; color: var(--faint); font-size: 13px; }
+  footer code { font-family: var(--mono); color: var(--muted); }
 </style>
 </head>
 <body>
 
-<div class="top">
-  <h1>livetrip demo</h1>
-  <a href="/docs">HTTP API reference</a>
-</div>
+<header class="top">
+  <div class="brand">
+    <h1>livetrip</h1>
+    <p>live trip updates · demo</p>
+  </div>
+  <nav class="links">
+    <a class="btn-outline" href="/docs">API reference</a>
+    <a class="btn-outline" id="metrics-link" href="http://localhost:9090" target="_blank" rel="noopener">Metrics</a>
+  </nav>
+</header>
 
-<section class="controls" aria-label="Controls">
+<section class="toolbar" aria-label="Controls">
   <div class="btns">
     <button id="b-status">Publish status</button>
     <button id="b-loc">Publish location</button>
     <button id="b-sos" class="sos">Send SOS</button>
     <button id="b-lift">Phone in a lift (40 s)</button>
     <button id="b-xt">Cross-tenant attempt</button>
-    <label class="toggle"><input type="checkbox" id="b-auto"> Auto-publish</label>
+    <label class="switch"><input type="checkbox" role="switch" id="b-auto"><span>Auto-publish</span></label>
   </div>
   <ol class="ctl-log" id="ctl-log" aria-live="polite"></ol>
 </section>
@@ -100,10 +180,13 @@
     <div class="p-head">
       <span class="p-title"></span>
       <span class="p-role"></span>
-      <span class="p-node">idle</span>
+      <span class="pill warn">idle</span>
     </div>
+    <div class="label">Topics</div>
     <div class="rows p-topics"></div>
+    <div class="label">Location</div>
     <div class="rows p-locs"></div>
+    <div class="label">Events</div>
     <ol class="p-log"></ol>
   </article>
 </template>
@@ -123,7 +206,7 @@ const TOPIC = {
 const BACKOFF_BASE_MS = 300;
 const BACKOFF_CAP_MS = 10000;
 const LIFT_SECONDS = 40;
-const LOG_LINES = 250;
+const LOG_LINES = 200;
 const CTL_LINES = 3;
 const TOKEN_TTL_S = 3600;
 
@@ -196,25 +279,16 @@ async function fetchToken(principal) {
   return r.data;
 }
 
-// appendLine adds one row (time + cells) at the top of list.
-function appendLine(list, max, cells, cls) {
-  const li = el('li', cls);
-  li.append(el('span', 'c-time', clock()));
-  cells.forEach((c, i) => li.append(el('span', i > 0 ? 'c-topic' : '', c)));
-  list.prepend(li);
+function trim(list, max) {
   while (list.children.length > max) list.lastChild.remove();
-  return li;
 }
 
 const ctlLog = document.getElementById('ctl-log');
 function ctl(text, cls = '') {
-  appendLine(ctlLog, CTL_LINES, [text], cls);
-}
-
-function row(...cells) {
-  const d = el('div');
-  for (const c of cells) d.append(el('span', c === '-' ? 'dim' : '', c));
-  return d;
+  const li = el('li', cls);
+  li.append(el('span', '', clock()), el('span', '', text));
+  ctlLog.prepend(li);
+  trim(ctlLog, CTL_LINES);
 }
 
 // ---- one panel = one user, one websocket ----
@@ -239,7 +313,6 @@ class Panel {
     this.offline = false;
     this.lift = false;
     this.pending = new Set();
-    this.lastLive = null;
     this.mount();
   }
 
@@ -247,57 +320,59 @@ class Panel {
     const root = document.getElementById('panel-tpl').content.firstElementChild.cloneNode(true);
     const p = this.cfg.principal;
     root.querySelector('.p-title').textContent = this.cfg.title;
-    root.querySelector('.p-role').textContent = p.role + (p.officeId ? ' ' + p.officeId : ' ' + p.sub);
+    root.querySelector('.p-role').textContent = p.role + (p.officeId ? ' · ' + p.officeId : ' · ' + p.sub);
     this.root = root;
-    this.nodeEl = root.querySelector('.p-node');
+    this.nodeEl = root.querySelector('.pill');
     this.topicsEl = root.querySelector('.p-topics');
     this.locsEl = root.querySelector('.p-locs');
     this.logEl = root.querySelector('.p-log');
-    if (this.multi) this.logEl.classList.add('multi');
     document.getElementById('panels').append(root);
     this.renderTopics();
     this.renderLocs();
   }
 
-  // log adds one event-log row; the topic column exists only when the
-  // panel watches more than one topic.
-  log(what, topic, cls) {
-    const cells = this.multi ? [what, topic ? short(topic) : ''] : [what];
-    return appendLine(this.logEl, LOG_LINES, cells, cls);
+  // log adds one event row: kind tag, seq/ver, detail. The topic is
+  // appended only when the panel watches more than one topic.
+  log(kind, pos, detail, topic, cls, mark) {
+    const li = el('li', cls);
+    const d = el('span', 'detail');
+    if (mark) d.append(el('span', 'mark', mark));
+    d.append(detail);
+    if (topic && this.multi) d.append(el('span', 'topic', short(topic)));
+    li.append(el('span', 'time', clock()), el('span', 'tag k-' + kind, kind), el('span', 'pos', pos), d);
+    this.logEl.prepend(li);
+    trim(this.logEl, LOG_LINES);
+    return li;
   }
 
-  // live logs a new live event; only the newest one stays green.
-  live(what, topic) {
-    if (this.lastLive) this.lastLive.classList.remove('live');
-    this.lastLive = this.log(what, topic, 'live');
-  }
-
-  // setState shows the node when connected, otherwise what is going on.
-  setState(text) {
+  // setState sets the pill: ok = live on a node, warn = connecting, bad = down.
+  setState(text, kind) {
     this.nodeEl.textContent = text;
+    this.nodeEl.className = 'pill ' + kind;
   }
 
   renderTopics() {
-    this.topicsEl.replaceChildren(...[...this.topics].map(([topic, t]) =>
-      row(short(topic), `seq ${t.lastSeq}`, t.latest || '-')));
+    this.topicsEl.replaceChildren(...[...this.topics].map(([topic, t]) => {
+      const r = el('div');
+      r.append(el('span', 'topic', short(topic)), el('span', 'badge', 'seq ' + t.lastSeq),
+        el('span', 'latest' + (t.latest ? '' : ' empty'), t.latest || '-'));
+      return r;
+    }));
   }
 
-  // One line per cab: the location that arrived last, from whichever topic.
+  // One row per (topic, cab): vers are only comparable within a topic.
   renderLocs() {
-    const byCab = new Map();
-    for (const l of this.locs.values()) {
-      if (!byCab.has(l.cab) || l.at >= byCab.get(l.cab).at) byCab.set(l.cab, l);
-    }
-    if (byCab.size === 0) {
-      this.locsEl.replaceChildren(row('no location', '', ''));
-      this.locsEl.firstChild.className = 'dim';
+    if (this.locs.size === 0) {
+      this.locsEl.replaceChildren(el('div', 'empty', 'No location yet.'));
       return;
     }
-    this.locsEl.replaceChildren(...[...byCab.values()].map(l => {
-      let pos = typeof l.lat === 'number' && typeof l.lng === 'number'
+    this.locsEl.replaceChildren(...[...this.locs.values()].map(l => {
+      const r = el('div');
+      const pos = typeof l.lat === 'number' && typeof l.lng === 'number'
         ? `${l.lat.toFixed(5)}, ${l.lng.toFixed(5)}` : '-';
-      if (this.multi) pos += ` (${short(l.topic)})`;
-      return row(l.cab, `ver ${l.ver}`, pos);
+      r.append(el('span', '', l.cab), el('span', 'topic muted', short(l.topic)),
+        el('span', 'badge', 'ver ' + l.ver), el('span', 'coords', pos));
+      return r;
     }));
   }
 
@@ -310,12 +385,12 @@ class Panel {
   async connect() {
     clearTimeout(this.timer);
     this.timer = null;
-    this.setState('connecting');
+    this.setState('connecting…', 'warn');
     let token;
     try {
       token = await this.token();
     } catch (e) {
-      this.log(e.message, '', 'dim');
+      this.log('error', '', e.message, '', 'close');
       return this.retry();
     }
     if (this.offline) return; // the lift started while the token was fetched
@@ -332,7 +407,7 @@ class Panel {
     ws.onmessage = m => {
       if (ws !== this.ws) return;
       let f;
-      try { f = JSON.parse(m.data); } catch { return this.log('unreadable frame', '', 'dim'); }
+      try { f = JSON.parse(m.data); } catch { return this.log('error', '', 'unreadable frame', '', 'close'); }
       this.onFrame(f);
     };
     ws.onclose = e => {
@@ -345,18 +420,19 @@ class Panel {
       case 'hello': return this.onHello(f);
       case 'subscribed': return this.onSubscribed(f);
       case 'event': return this.onEvent(f);
-      case 'unsubscribed': return this.log('unsubscribed', f.topic, 'dim');
-      case 'error': return this.log(`error ${f.code}: ${f.message}`, f.topic, 'dim');
+      case 'unsubscribed': return this.log('unsubscribed', '', short(f.topic), '', 'dim');
+      case 'error': return this.log('error', '', `${f.code}: ${f.message}`, f.topic, 'close');
     }
   }
 
   onHello(f) {
     const prev = this.node;
     this.node = f.node || '?';
-    this.setState(this.node);
+    this.setState(this.node, 'ok');
     if (prev && prev !== this.node) {
+      this.nodeEl.classList.remove('changed');
+      void this.nodeEl.offsetWidth; // restart the animation
       this.nodeEl.classList.add('changed');
-      setTimeout(() => this.nodeEl.classList.remove('changed'), 3000);
     }
   }
 
@@ -379,13 +455,13 @@ class Panel {
       how = asOf > t.floor ? `replay ${t.floor + 1}-${asOf}` : 'replay: nothing missed';
       if (this.lift && liftSent) how += `, page sent ${liftSent[f.topic] || 0} while offline`;
     }
-    this.log(`subscribed ${short(f.topic)} (${how})`, '', '');
+    this.log('subscribed', '', `${short(f.topic)} (${how})`, '', '');
     this.pending.delete(f.topic);
     if (this.pending.size === 0) {
       this.attempt = 0;
       if (this.lift) liftSent = null;
       this.lift = false;
-      this.setState(this.node);
+      this.setState(this.node, 'ok');
     }
     this.renderTopics();
     this.renderLocs();
@@ -400,24 +476,24 @@ class Panel {
       const key = ev.topic + '|' + ev.cabId;
       const cur = this.locs.get(key);
       if (cur && ev.ver <= cur.ver) {
-        this.log(`ver ${ev.ver} location ${ev.cabId} dropped (have ver ${cur.ver})`, ev.topic, 'dim');
+        this.log('location', `ver ${ev.ver}`, `${ev.cabId} dropped (have ver ${cur.ver})`, ev.topic, 'dim');
         return;
       }
       this.locs.set(key, { topic: ev.topic, cab: ev.cabId, ver: ev.ver, lat: p.lat, lng: p.lng, at: Date.now() });
-      this.live(`ver ${ev.ver} location ${ev.cabId}`, ev.topic);
+      this.log('location', `ver ${ev.ver}`, ev.cabId, ev.topic, '');
       this.renderLocs();
       return;
     }
 
     const seq = ev.seq;
     if (seq <= t.lastSeq) {
-      this.log(`seq ${seq} ${ev.kind} dropped (have seq ${t.lastSeq})`, ev.topic, 'dim');
+      this.log(ev.kind, `seq ${seq}`, `dropped (have seq ${t.lastSeq})`, ev.topic, 'dim');
       return;
     }
     if (seq > t.floor) {
       const want = Math.max(t.lastSeq, t.floor) + 1;
       if (seq !== want) {
-        this.log(`gap: got seq ${seq}, expected ${want}; reconnecting`, ev.topic, '');
+        this.log('gap', `seq ${seq}`, `expected ${want}; reconnecting`, ev.topic, 'warn');
         this.drop('seq gap');
         return;
       }
@@ -427,21 +503,18 @@ class Panel {
     // Snapshot contents are summed up by the "subscribed" line.
     const snap = t.resume === 'snapshot' && seq <= t.floor;
     const caughtUp = seq <= t.asOf;
+    const mark = caughtUp ? 'replay' : '';
     if (ev.kind === 'sos') {
       const ms = Date.now() - Date.parse(ev.createdAt);
       t.latest = `SOS ${ev.cabId}`;
       if (!snap) {
         const lat = caughtUp ? `raised ${(ms / 1000).toFixed(1)} s ago` : `${ms} ms`;
-        this.log(`SOS ${ev.cabId} · ${lat}`, ev.topic, 'sosl');
+        this.log('sos', `seq ${seq}`, `${ev.cabId} · ${lat}`, ev.topic, 'sos', mark);
         this.flashSOS();
       }
     } else {
       t.latest = p.status || ev.kind;
-      if (!snap) {
-        const what = `seq ${seq} ${ev.kind}${p.status ? ' ' + p.status : ''}`;
-        if (caughtUp) this.log(what, ev.topic, '');
-        else this.live(what, ev.topic);
-      }
+      if (!snap) this.log(ev.kind, `seq ${seq}`, p.status || '', ev.topic, caughtUp ? '' : 'live', mark);
     }
     this.renderTopics();
   }
@@ -453,11 +526,11 @@ class Panel {
 
   onClose(e) {
     this.ws = null;
-    this.log(`close ${e.code} ${closeMeaning(e.code)}`, '', 'close');
+    this.log('close', String(e.code), closeMeaning(e.code), '', 'close');
     if (this.offline) return;
     if (NO_RETRY.has(e.code)) {
-      this.setState(`closed ${e.code}`);
-      this.log('not reconnecting: it would be refused again', '', 'close');
+      this.setState(`closed ${e.code}`, 'bad');
+      this.log('close', '', 'not reconnecting: it would be refused again', '', 'close');
       return;
     }
     this.retry();
@@ -478,8 +551,8 @@ class Panel {
     const ceil = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** this.attempt);
     const delay = Math.floor(Math.random() * ceil);
     this.attempt++;
-    this.setState('reconnecting');
-    this.log(`reconnect #${this.attempt} in ${delay} ms`, '', 'dim');
+    this.setState('reconnecting…', 'warn');
+    this.log('reconnect', '', `#${this.attempt} in ${delay} ms`, '', 'warn');
     this.timer = setTimeout(() => { this.timer = null; this.connect(); }, delay);
   }
 
@@ -491,14 +564,14 @@ class Panel {
     this.ws = null;
     if (ws) ws.close(1000, 'phone in a lift');
     const seqs = [...this.topics].map(([tp, t]) => `${short(tp)} seq ${t.lastSeq}`).join(', ');
-    this.log(`offline (in a lift), keeping ${seqs}`, '', '');
+    this.log('offline', '', `in a lift, keeping ${seqs}`, '', 'dim');
   }
 
   goOnline() {
     this.offline = false;
     this.lift = true;
     this.attempt = 0;
-    this.log('back online, resuming', '', '');
+    this.log('online', '', 'back online, resuming', '', 'dim');
     this.connect();
   }
 }
@@ -559,7 +632,7 @@ const ok = r => r.status === 200 || r.status === 201;
 async function publishStatus() {
   const status = STATUSES[statusIdx++ % STATUSES.length];
   const rs = await Promise.all([TOPIC.trip, TOPIC.office].map(t => publish('/v1/events', t, 'status', { status })));
-  ctl(`status ${status}: ${result(TOPIC.trip, rs[0])}, ${result(TOPIC.office, rs[1])}`);
+  ctl(`status ${status}: ${result(TOPIC.trip, rs[0])}, ${result(TOPIC.office, rs[1])}`, rs.every(ok) ? '' : 'err');
 }
 
 async function publishLocation(quiet) {
@@ -570,13 +643,13 @@ async function publishLocation(quiet) {
   };
   const rs = await Promise.all([TOPIC.trip, TOPIC.office].map(t => publish('/v1/events', t, 'location', pos)));
   if (!quiet || !rs.every(ok)) {
-    ctl(`location ${CAB}: ${result(TOPIC.trip, rs[0])}, ${result(TOPIC.office, rs[1])}`);
+    ctl(`location ${CAB}: ${result(TOPIC.trip, rs[0])}, ${result(TOPIC.office, rs[1])}`, rs.every(ok) ? '' : 'err');
   }
 }
 
 async function sendSOS() {
   const r = await publish('/v1/sos', TOPIC.sos, 'sos', { tripId: '42', note: 'panic button' });
-  ctl(`SOS ${CAB}: ${result(TOPIC.sos, r)}`, 'sosl');
+  ctl(`SOS ${CAB}: ${result(TOPIC.sos, r)}`, 'err');
 }
 
 // ---- scenarios ----
@@ -589,7 +662,7 @@ function phoneInLift() {
   ctl(`employee phone offline for ${LIFT_SECONDS} s; publish now, then watch the replay`);
   let left = LIFT_SECONDS;
   const tick = () => {
-    phone.setState(`in a lift ${left} s`);
+    phone.setState(`offline (in a lift ${left} s)`, 'bad');
     liftBtn.textContent = `In a lift… ${left} s`;
   };
   tick();
@@ -609,7 +682,7 @@ async function crossTenant() {
   try {
     tok = await fetchToken({ tenant: 'globex', sub: 'alice', role: 'employee' });
   } catch (e) {
-    return ctl('cross-tenant: ' + e.message);
+    return ctl('cross-tenant: ' + e.message, 'err');
   }
   const ws = new WebSocket(wsURL(tok.token));
   ws.onmessage = m => {
@@ -617,13 +690,13 @@ async function crossTenant() {
     if (f.type === 'hello') {
       ws.send(JSON.stringify({ op: 'subscribe', topic: TOPIC.trip, lastSeq: 0 }));
     } else {
-      ctl(`cross-tenant: unexpected ${f.type} frame`);
+      ctl(`cross-tenant: unexpected ${f.type} frame`, 'err');
     }
   };
   ws.onclose = e => {
     const held = e.code === 4003;
     ctl(`cross-tenant: close ${e.code} ${closeMeaning(e.code)}` +
-      (held ? ', tenant isolation held' : ''), 'close');
+      (held ? ', tenant isolation held' : ''), 'err');
   };
 }
 
@@ -649,6 +722,8 @@ document.getElementById('b-xt').onclick = crossTenant;
 const autoBox = document.getElementById('b-auto');
 autoBox.checked = false; // a reload may restore the old form state
 autoBox.onchange = e => setAuto(e.target.checked);
+// Prometheus is published on :9090 of the same host.
+document.getElementById('metrics-link').href = `${location.protocol}//${location.hostname}:9090`;
 
 panels.forEach(p => p.connect());
 </script>
