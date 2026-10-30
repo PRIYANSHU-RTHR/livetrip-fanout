@@ -1,0 +1,13 @@
+.git
+.vscode
+.idea
+.cursor
+bin
+dist
+results
+docs
+deploy
+*.test
+*.out
+.env
+.env.*
