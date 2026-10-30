@@ -9,6 +9,7 @@
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
   :root {
+    color-scheme: dark;
     --bg: #0f0f0f;
     --card: #171717;
     --card-2: #1e1e1e;
@@ -26,9 +27,20 @@
     --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; background: var(--bg); color: var(--text); }
-  body { font: 14px/1.5 var(--sans); padding: 24px; max-width: 1600px; margin: 0 auto; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); }
+  body {
+    font: 14px/1.5 var(--sans); padding: 24px; max-width: 1600px; margin: 0 auto;
+    display: flex; flex-direction: column;
+  }
   .mono { font-family: var(--mono); }
+
+  /* dark scrollbars everywhere */
+  * { scrollbar-width: thin; scrollbar-color: #3a3a3a transparent; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: #2f2f2f; border-radius: 8px; }
+  ::-webkit-scrollbar-thumb:hover { background: #444; }
+  ::-webkit-scrollbar-corner { background: transparent; }
 
   /* header */
   .top { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
@@ -50,7 +62,7 @@
     transition: background .15s, border-color .15s;
   }
   button:hover:not(:disabled) { background: #2a2a2a; border-color: #3a3a3a; }
-  button:disabled { color: var(--faint); cursor: default; }
+  button:disabled { color: var(--muted); cursor: default; }
   button.sos { background: var(--red); border-color: var(--red); color: #1a0606; }
   button.sos:hover:not(:disabled) { background: #fb8a8a; border-color: #fb8a8a; }
 
@@ -73,19 +85,32 @@
   .ctl-log .err { color: var(--red); }
 
   /* panels */
-  .panels { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; align-items: start; }
-  @media (max-width: 1100px) { .panels { grid-template-columns: 1fr; } }
+  /* Fixed-height app: the panel row takes what is left and only the
+     event lists scroll. Below 1100px the page scrolls normally. */
+  .top, .toolbar, footer { flex: none; }
+  .panels {
+    flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px;
+  }
   .panel {
     background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px;
-    min-width: 0; max-height: 70vh; overflow-y: auto; transition: border-color .3s;
+    min-width: 0; height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+    transition: border-color .3s;
   }
   .panel.flash-sos { border-color: var(--red); }
+  @media (min-width: 1100px) { body { overflow: hidden; } }
+  @media (max-width: 1099px) {
+    html, body { height: auto; }
+    .panels { grid-template-columns: 1fr; }
+    .panel { height: auto; }
+    .panel .p-log { flex: none; max-height: 50vh; }
+  }
 
-  .p-head { display: flex; align-items: center; gap: 8px; }
+  .p-head { display: flex; align-items: center; gap: 12px; flex: none; }
+  .p-name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .p-title { font-size: 16px; font-weight: 600; }
-  .p-role { color: var(--muted); font-size: 13px; }
+  .p-role { color: var(--muted); font-size: 13px; margin-left: 8px; }
   .pill {
-    margin-left: auto; display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px;
+    flex: none; display: inline-flex; align-items: center; gap: 6px; padding: 2px 10px;
     border: 1px solid var(--border); border-radius: 999px; font: 12px var(--mono); color: var(--muted); white-space: nowrap;
   }
   .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
@@ -95,7 +120,9 @@
   .pill.changed { animation: pill-flash 1.6s ease-out; }
   @keyframes pill-flash { 0%, 30% { background: rgba(63, 207, 142, .3); } 100% { background: transparent; } }
 
-  .label { margin: 18px 0 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .label { flex: none; margin: 18px 0 8px; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .08em; color: var(--muted); }
+  .rows { flex: none; }
+  .p-locs { max-height: 140px; overflow-y: auto; }
   .rows > div { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
   .rows > div:last-child { border-bottom: 0; }
   .topic { color: var(--blue); font: 13px var(--mono); }
@@ -110,26 +137,30 @@
 
   /* events: a code block */
   .p-log {
+    flex: 1; min-height: 0; overflow-y: auto;
     list-style: none; margin: 0; padding: 8px 0; background: var(--card-2); border: 1px solid var(--border);
     border-radius: 8px; font: 12px/1.6 var(--mono);
   }
   .p-log:empty::before { content: "No events yet. Press Publish status."; display: block; padding: 4px 12px; color: var(--muted); font-family: var(--sans); font-size: 13px; }
   .p-log li {
-    display: grid; grid-template-columns: 8ch 10ch 7ch minmax(0, 1fr); column-gap: 1ch; align-items: baseline;
+    display: grid; grid-template-columns: 64px 72px 72px minmax(0, 1fr) auto; column-gap: 8px; align-items: center;
     padding: 1px 12px; animation: fade-in .9s ease-out;
   }
   @keyframes fade-in { 0% { background: rgba(63, 207, 142, .18); opacity: .3; } 25% { opacity: 1; } 100% { background: transparent; } }
   .p-log .time { color: var(--faint); }
-  .p-log .pos { color: var(--orange); }
-  .p-log .detail { color: var(--text); overflow-wrap: anywhere; }
-  .p-log .detail .topic { font-size: 12px; margin-left: 6px; }
+  .p-log .pos { color: var(--orange); white-space: nowrap; }
+  .p-log .detail { color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .p-log .ttag {
+    white-space: nowrap; font-size: 10.5px; color: var(--muted); border: 1px solid var(--border);
+    border-radius: 4px; padding: 0 5px; line-height: 1.6;
+  }
   .p-log li.dim .detail, .p-log li.dim .pos { color: var(--faint); }
   .p-log li.sos .detail, .p-log li.close .detail { color: var(--red); }
   .p-log li.warn .detail { color: var(--amber); }
   .p-log li.live .detail { color: var(--green); }
 
   .tag {
-    justify-self: start; font-size: 10.5px; font-weight: 500; line-height: 1.6; padding: 0 6px; border-radius: 4px;
+    justify-self: start; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; font-weight: 500; line-height: 1.6; padding: 0 6px; border-radius: 4px;
     text-transform: lowercase; color: var(--muted); background: rgba(161, 161, 161, .12);
   }
   .tag.k-status { color: var(--blue); background: rgba(122, 162, 247, .12); }
@@ -178,8 +209,7 @@
 <template id="panel-tpl">
   <article class="panel">
     <div class="p-head">
-      <span class="p-title"></span>
-      <span class="p-role"></span>
+      <span class="p-name"><span class="p-title"></span><span class="p-role"></span></span>
       <span class="pill warn">idle</span>
     </div>
     <div class="label">Topics</div>
@@ -296,7 +326,6 @@ function ctl(text, cls = '') {
 class Panel {
   constructor(cfg) {
     this.cfg = cfg;
-    this.multi = cfg.topics.length > 1;
     this.topics = new Map(cfg.topics.map(t => [t, {
       lastSeq: 0,   // newest reliable seq applied
       floor: 0,     // seqs <= floor are catch-up; no gap check below it
@@ -331,15 +360,26 @@ class Panel {
     this.renderLocs();
   }
 
-  // log adds one event row: kind tag, seq/ver, detail. The topic is
-  // appended only when the panel watches more than one topic.
+  // topicsFor counts this panel's topics that can carry kind: SOS comes on
+  // sos topics, status and location on the others.
+  topicsFor(kind) {
+    const ts = [...this.topics.keys()];
+    if (kind === 'sos') return ts.filter(t => t.includes(':sos:')).length;
+    if (kind === 'status' || kind === 'location') return ts.filter(t => !t.includes(':sos:')).length;
+    return ts.length;
+  }
+
+  // log adds one event row: kind tag, seq/ver, detail and, only when the
+  // row would be ambiguous otherwise, a topic tag.
   log(kind, pos, detail, topic, cls, mark) {
     const li = el('li', cls);
     const d = el('span', 'detail');
     if (mark) d.append(el('span', 'mark', mark));
     d.append(detail);
-    if (topic && this.multi) d.append(el('span', 'topic', short(topic)));
     li.append(el('span', 'time', clock()), el('span', 'tag k-' + kind, kind), el('span', 'pos', pos), d);
+    const where = topic && this.topicsFor(kind) > 1 ? short(topic) : '';
+    li.append(el('span', where ? 'ttag' : '', where));
+    li.title = [mark, detail, where].filter(Boolean).join(' · ');
     this.logEl.prepend(li);
     trim(this.logEl, LOG_LINES);
     return li;
@@ -385,7 +425,7 @@ class Panel {
   async connect() {
     clearTimeout(this.timer);
     this.timer = null;
-    this.setState('connecting…', 'warn');
+    this.setState('connecting', 'warn');
     let token;
     try {
       token = await this.token();
@@ -551,7 +591,7 @@ class Panel {
     const ceil = Math.min(BACKOFF_CAP_MS, BACKOFF_BASE_MS * 2 ** this.attempt);
     const delay = Math.floor(Math.random() * ceil);
     this.attempt++;
-    this.setState('reconnecting…', 'warn');
+    this.setState('reconnecting', 'warn');
     this.log('reconnect', '', `#${this.attempt} in ${delay} ms`, '', 'warn');
     this.timer = setTimeout(() => { this.timer = null; this.connect(); }, delay);
   }
@@ -662,7 +702,7 @@ function phoneInLift() {
   ctl(`employee phone offline for ${LIFT_SECONDS} s; publish now, then watch the replay`);
   let left = LIFT_SECONDS;
   const tick = () => {
-    phone.setState(`offline (in a lift ${left} s)`, 'bad');
+    phone.setState(`lift · ${left} s`, 'bad');
     liftBtn.textContent = `In a lift… ${left} s`;
   };
   tick();
