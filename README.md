@@ -33,7 +33,7 @@ Every subscription is checked against the user's company and role, not just thei
 You need Docker. One command starts everything (Redis, the publisher, three gateways, a load balancer and Prometheus):
 
 ```bash
-make up          # same as: docker compose -f deploy/docker-compose.yml up -d --build
+make up     
 ```
 
 Then open:
