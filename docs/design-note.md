@@ -58,7 +58,10 @@ The client sends `{"op":"subscribe","topic":"t:acme:trip:42","lastSeq":18}`.
 | Connections per gateway | 50,000 | New connections get `1013` |
 | Publisher requests in flight | 256 | `503` for location and status; SOS not counted |
 
-A connection is estimated (not measured) at roughly 20 to 40 KB (three goroutines, a 1 KB read buffer, the reliable lane and the location map; write buffers come from a shared pool). The ceiling is the single Redis primary, because every publish runs one Lua script there. The next step is Redis Cluster; the `{topic}` hash tags already allow that without code changes.
+Measured with 2,000 real connections (`make bench`): **54 KB per connection**, of which
+about 18 KB is goroutine stacks (HTTP server, reader, pinger), 11 KB is the reliable lane
+(64 events allocated up front) and the rest is WebSocket and HTTP state. The clients ran in
+the same process, so this is an upper bound for the server's share. The ceiling is the single Redis primary, because every publish runs one Lua script there. The next step is Redis Cluster; the `{topic}` hash tags already allow that without code changes.
 
 ## 6. WebSocket protocol
 
@@ -81,3 +84,4 @@ Token in `Authorization: Bearer ...` or `?token=`.
 ## 7. Monitoring
 
 Every service exposes `/metrics`, scraped by Prometheus every 5 seconds. The first things to watch at 3 AM: `livetrip_delivery_latency_seconds{kind="sos"}`, `livetrip_reliable_queue_depth`, `livetrip_ws_closes_total{reason}`, `livetrip_gap_repairs_total`, `livetrip_redis_errors_total`. Labels never include topic, tenant or user. Logs are JSON; payloads are never logged, and phone, email and coordinates are redacted if they ever appear.
+
