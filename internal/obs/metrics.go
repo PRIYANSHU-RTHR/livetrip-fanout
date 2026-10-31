@@ -39,6 +39,7 @@ type Metrics struct {
 	publishes      *prometheus.CounterVec
 	publishLatency *prometheus.HistogramVec
 	sosRetries     prometheus.Counter
+	seqGaps        prometheus.Counter
 	gapRepairs     *prometheus.CounterVec
 	resyncs        prometheus.Counter
 	redisErrors    *prometheus.CounterVec
@@ -87,6 +88,10 @@ func NewMetrics() *Metrics {
 			Name: "livetrip_sos_retries_total",
 			Help: "SOS publishes retried after an event log error.",
 		}),
+		seqGaps: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "livetrip_router_seq_gap_total",
+			Help: "Reliable events from the broker that skipped ahead of the last seq forwarded, before repair.",
+		}),
 		gapRepairs: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "livetrip_gap_repairs_total",
 			Help: "Seq gaps from the broker, by result (ok: replayed from the log, failed: subscribers closed).",
@@ -108,7 +113,7 @@ func NewMetrics() *Metrics {
 		collectors.NewGoCollector(),
 		collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}),
 		m.e2eLatency, m.queueDepth, m.conflated, m.wsCloses, m.subscribes, m.resumes,
-		m.publishes, m.publishLatency, m.sosRetries, m.gapRepairs, m.resyncs,
+		m.publishes, m.publishLatency, m.sosRetries, m.seqGaps, m.gapRepairs, m.resyncs,
 		m.redisErrors, m.panics,
 	)
 	return m
@@ -123,6 +128,13 @@ func (m *Metrics) Handler() http.Handler {
 // program already tracks (open connections, topics).
 func (m *Metrics) Gauge(name, help string, f func() float64) {
 	m.reg.MustRegister(prometheus.NewGaugeFunc(prometheus.GaugeOpts{Name: name, Help: help}, f))
+}
+
+// LabeledGauge is Gauge for one series of a family; call it once per label
+// value, with the same name, help and label names.
+func (m *Metrics) LabeledGauge(name, help string, labels map[string]string, f func() float64) {
+	m.reg.MustRegister(prometheus.NewGaugeFunc(
+		prometheus.GaugeOpts{Name: name, Help: help, ConstLabels: labels}, f))
 }
 
 // fanout.Metrics
@@ -152,6 +164,8 @@ func (m *Metrics) Published(kind domain.EventKind, outcome string, took time.Dur
 func (m *Metrics) SOSRetried() { m.sosRetries.Inc() }
 
 // routing.Metrics
+
+func (m *Metrics) GapSeen() { m.seqGaps.Inc() }
 
 func (m *Metrics) GapRepaired(ok bool) {
 	result := "ok"

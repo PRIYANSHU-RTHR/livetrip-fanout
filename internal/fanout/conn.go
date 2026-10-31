@@ -35,7 +35,9 @@ type Sink interface {
 //   - location: conflated, only the newest event per (topic, cab) is kept.
 //
 // A third, unbuffered catch-up lane carries resume events (see Hold and
-// Resume), so a long replay never fills the reliable lane.
+// Resume), so a long replay never fills the reliable lane. While a topic is
+// held, its locations are conflated as usual but not signalled to Run, so
+// none is written before the topic's "subscribed" frame and catch-up.
 //
 // Enqueue never blocks and never does I/O; Run is the only goroutine that
 // touches the Sink.
@@ -49,14 +51,20 @@ type Conn struct {
 	mu      sync.Mutex
 	latest  map[locKey]domain.Event // newest by Ver
 	pending []locKey                // keys with an unsent location, FIFO
-	dirty   map[locKey]bool         // keys currently in pending
-	// holds has an entry per topic being resumed; its reliable events
-	// wait there until Resume has sent the catch-up.
-	holds map[domain.Topic][]domain.Event
+	dirty   map[locKey]bool         // keys currently in pending or a hold
+	// holds has an entry per topic being resumed; its events wait there
+	// until Resume has sent the catch-up.
+	holds map[domain.Topic]*hold
 
 	done      chan struct{}
 	closeOnce sync.Once
 	cause     error // set once before done is closed
+}
+
+// hold is what waits for one topic during a resume.
+type hold struct {
+	events []domain.Event // reliable, in arrival order
+	locs   []locKey       // keys with an unsent location, moved to pending by Resume
 }
 
 func NewConn(sink Sink) *Conn {
@@ -97,13 +105,13 @@ func (c *Conn) Enqueue(ev domain.Event) error {
 	}
 
 	c.mu.Lock()
-	if held, ok := c.holds[ev.Topic]; ok {
-		if len(held) >= ReliableBuffer {
+	if h, ok := c.holds[ev.Topic]; ok {
+		if len(h.events) >= ReliableBuffer {
 			c.mu.Unlock()
 			c.Close(ErrSlowConsumer)
 			return ErrSlowConsumer
 		}
-		c.holds[ev.Topic] = append(held, ev)
+		h.events = append(h.events, ev)
 		c.mu.Unlock()
 		return nil
 	}
@@ -120,31 +128,50 @@ func (c *Conn) Enqueue(ev domain.Event) error {
 }
 
 // Hold starts a resume of topic: from now on its reliable events are kept
-// aside (at most ReliableBuffer) instead of queued. Call it before the
-// connection is attached to the topic, then read the catch-up from the log
-// and call Resume, or CancelHold if the subscribe fails.
+// aside (at most ReliableBuffer) instead of queued, and its locations are
+// kept but not written. Call it before the connection is attached to the
+// topic, then read the catch-up from the log and call Resume, or CancelHold
+// if the subscribe fails.
 func (c *Conn) Hold(topic domain.Topic) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.holds == nil {
-		c.holds = make(map[domain.Topic][]domain.Event)
+		c.holds = make(map[domain.Topic]*hold)
 	}
-	if _, ok := c.holds[topic]; !ok {
-		c.holds[topic] = nil
+	if _, ok := c.holds[topic]; ok {
+		return
 	}
+	h := &hold{}
+	// A location still queued from an earlier subscription waits too.
+	kept := c.pending[:0]
+	for _, k := range c.pending {
+		if k.topic == topic {
+			h.locs = append(h.locs, k)
+		} else {
+			kept = append(kept, k)
+		}
+	}
+	clear(c.pending[len(kept):])
+	c.pending = kept
+	c.holds[topic] = h
 }
 
 // CancelHold ends a hold and discards what it kept.
 func (c *Conn) CancelHold(topic domain.Topic) {
 	c.mu.Lock()
-	delete(c.holds, topic)
+	if h, ok := c.holds[topic]; ok {
+		for _, k := range h.locs {
+			delete(c.dirty, k)
+		}
+		delete(c.holds, topic)
+	}
 	c.mu.Unlock()
 }
 
 // Resume sends catchup (reliable events from the log, in order), then the
 // held live events with Seq > asOf and not already sent, then ends the
-// hold so later events take the reliable lane again. asOf is the topic Seq
-// the catch-up brings the client to.
+// hold so later events take the reliable lane again and the held locations
+// are written. asOf is the topic Seq the catch-up brings the client to.
 //
 // Unlike Enqueue it blocks until Run has taken each event, so it must not
 // be called from Run. It returns ErrClosed if the connection closes and
@@ -159,16 +186,25 @@ func (c *Conn) Resume(ctx context.Context, topic domain.Topic, catchup []domain.
 	}
 	for {
 		c.mu.Lock()
-		held := c.holds[topic]
-		if len(held) == 0 {
+		h := c.holds[topic]
+		if h == nil || len(h.events) == 0 {
 			// The catch-up lane is unbuffered, so everything sent so far
-			// is already in Run's hands: nothing queued after this point
-			// can overtake it.
+			// is already in Run's hands: nothing queued after this point,
+			// held locations included, can overtake it.
 			delete(c.holds, topic)
+			var locs bool
+			if h != nil && len(h.locs) > 0 {
+				c.pending = append(c.pending, h.locs...)
+				locs = true
+			}
 			c.mu.Unlock()
+			if locs {
+				c.signalLocation()
+			}
 			return nil
 		}
-		c.holds[topic] = nil
+		held := h.events
+		h.events = nil
 		c.mu.Unlock()
 
 		for _, ev := range held {
@@ -211,15 +247,22 @@ func (c *Conn) conflate(ev domain.Event) {
 	}
 	c.latest[k] = ev
 	replaced := c.dirty[k]
+	h, held := c.holds[ev.Topic]
 	if !replaced {
 		c.dirty[k] = true
-		c.pending = append(c.pending, k)
+		if held {
+			h.locs = append(h.locs, k)
+		} else {
+			c.pending = append(c.pending, k)
+		}
 	}
 	c.mu.Unlock()
 	if replaced {
 		c.metrics.LocationConflated()
 	}
-	c.signalLocation()
+	if !held {
+		c.signalLocation() // Resume signals held ones
+	}
 }
 
 func (c *Conn) signalLocation() {

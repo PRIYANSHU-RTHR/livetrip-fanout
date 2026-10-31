@@ -5,13 +5,18 @@ REDIS_ADDR ?= localhost:6379
 # e.g. make loadtest ARGS="-kill gateway-2"
 ARGS ?=
 
-.PHONY: build test test-redis redis lint run up down loadtest
+.PHONY: build test bench test-redis redis lint run up down loadtest
 
 build:
 	$(GO) build ./...
 
 test:
 	$(GO) test -race ./...
+
+# Benchmarks, then the measured memory per websocket connection.
+bench:
+	$(GO) test -run '^$$' -bench . ./internal/fanout ./internal/eventlog/memory
+	$(GO) test -run TestMemoryPerConnection -count=1 -v ./internal/handler
 
 # Integration tests; needs `make redis` first.
 test-redis:

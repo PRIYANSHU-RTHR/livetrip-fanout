@@ -434,8 +434,15 @@ func TestConcurrentLanes(t *testing.T) {
 
 type recMetrics struct {
 	mu      sync.Mutex
+	gaps    int
 	repairs []bool
 	resyncs int
+}
+
+func (m *recMetrics) GapSeen() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.gaps++
 }
 
 func (m *recMetrics) GapRepaired(ok bool) {
@@ -466,5 +473,9 @@ func TestRepairMetrics(t *testing.T) {
 
 	if fmt.Sprint(m.repairs) != "[true true false]" || m.resyncs != 1 {
 		t.Fatalf("repairs = %v, resyncs = %d; want [true true false], 1", m.repairs, m.resyncs)
+	}
+	// Only the two Deliver gaps were seen; the Resync was not a gap.
+	if m.gaps != 2 {
+		t.Fatalf("gaps = %d, want 2", m.gaps)
 	}
 }

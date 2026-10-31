@@ -62,6 +62,9 @@ type Config struct {
 // Metrics records how often the broker lost events. obs.Metrics
 // implements it.
 type Metrics interface {
+	// GapSeen is called when a reliable event skips ahead of the last one
+	// forwarded, before the repair.
+	GapSeen()
 	// GapRepaired is called after each repair: ok is false when the
 	// topic's subscribers had to be closed instead.
 	GapRepaired(ok bool)
@@ -71,6 +74,7 @@ type Metrics interface {
 
 type noMetrics struct{}
 
+func (noMetrics) GapSeen()         {}
 func (noMetrics) GapRepaired(bool) {}
 func (noMetrics) Resynced()        {}
 
@@ -203,6 +207,7 @@ func (r *Router) Deliver(ev domain.Event) {
 		return // already forwarded, e.g. by a repair
 	}
 	if ev.Seq > st.last+1 && !st.reset {
+		r.metrics.GapSeen()
 		r.repair(ev.Topic, st)
 	}
 	st.reset = false

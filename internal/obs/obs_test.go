@@ -82,10 +82,14 @@ func TestCountersAndGauges(t *testing.T) {
 	m.Resumed("snapshot_trimmed")
 	m.Published(domain.KindStatus, "duplicate", time.Millisecond)
 	m.SOSRetried()
+	m.GapSeen()
 	m.GapRepaired(false)
 	m.Resynced()
 	m.Panicked("http")
 	m.Gauge("livetrip_ws_connections", "open", func() float64 { return 7 })
+	for bus, n := range map[string]float64{"main": 12, "sos": 0} {
+		m.LabeledGauge("livetrip_bus_backlog", "waiting", map[string]string{"bus": bus}, func() float64 { return n })
+	}
 
 	body := scrape(t, m)
 	for _, want := range []string{
@@ -96,6 +100,9 @@ func TestCountersAndGauges(t *testing.T) {
 		`livetrip_resumes_total{mode="snapshot_trimmed"} 1`,
 		`livetrip_publishes_total{kind="status",outcome="duplicate"} 1`,
 		"livetrip_sos_retries_total 1",
+		"livetrip_router_seq_gap_total 1",
+		`livetrip_bus_backlog{bus="main"} 12`,
+		`livetrip_bus_backlog{bus="sos"} 0`,
 		`livetrip_gap_repairs_total{result="failed"} 1`,
 		"livetrip_bus_resyncs_total 1",
 		`livetrip_panics_total{where="http"} 1`,

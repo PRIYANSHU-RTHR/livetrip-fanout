@@ -500,6 +500,79 @@ func TestLongReplayLeavesReliableLaneFree(t *testing.T) {
 	}
 }
 
+// A location of a held topic waits for Resume, so it never reaches the
+// client before the topic's "subscribed" frame and catch-up. Other topics'
+// locations are not held back.
+func TestHeldLocationWrittenAfterCatchUp(t *testing.T) {
+	sink := newFakeSink()
+	c := NewConn(sink)
+	stop := start(t, c)
+	defer stop()
+
+	c.Hold(trip)
+	mustEnqueue(t, c, loc("cab-a", 1))
+	mustEnqueue(t, c, loc("cab-a", 2)) // conflated while held
+	sink.expectNoMore(t)
+
+	other := domain.Topic{Tenant: "acme", Kind: domain.TopicTrip, ID: "43"}
+	onOther := loc("cab-b", 1)
+	onOther.Topic = other
+	mustEnqueue(t, c, onOther)
+	if ev := sink.next(t); ev.Topic != other {
+		t.Fatalf("got %s, want the other topic's location", ev.Topic)
+	}
+
+	if err := c.Resume(context.Background(), trip, []domain.Event{reliable(domain.KindStatus, 1)}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if ev := sink.next(t); ev.Kind != domain.KindStatus || ev.Seq != 1 {
+		t.Fatalf("first write = %s seq=%d, want catch-up status 1", ev.Kind, ev.Seq)
+	}
+	if ev := sink.next(t); ev.Kind != domain.KindLocation || ev.Ver != 2 {
+		t.Fatalf("second write = %s ver=%d, want location ver 2", ev.Kind, ev.Ver)
+	}
+	sink.expectNoMore(t)
+}
+
+// A location still queued from an earlier subscription waits for the new
+// hold as well.
+func TestHoldTakesQueuedLocation(t *testing.T) {
+	sink := newFakeSink()
+	c := NewConn(sink) // writer not started yet
+	mustEnqueue(t, c, loc("cab-a", 1))
+	c.Hold(trip)
+	stop := start(t, c)
+	defer stop()
+	sink.expectNoMore(t)
+
+	if err := c.Resume(context.Background(), trip, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if ev := sink.next(t); ev.Ver != 1 {
+		t.Fatalf("got ver %d, want 1", ev.Ver)
+	}
+}
+
+// A cancelled hold drops its locations; the next one for the same cab is
+// still delivered.
+func TestCancelHoldDropsHeldLocations(t *testing.T) {
+	sink := newFakeSink()
+	c := NewConn(sink)
+	stop := start(t, c)
+	defer stop()
+
+	c.Hold(trip)
+	mustEnqueue(t, c, loc("cab-a", 1))
+	c.CancelHold(trip)
+	sink.expectNoMore(t)
+
+	mustEnqueue(t, c, loc("cab-a", 2))
+	if ev := sink.next(t); ev.Ver != 2 {
+		t.Fatalf("got ver %d, want 2", ev.Ver)
+	}
+	sink.expectNoMore(t)
+}
+
 func TestResumeReturnsWhenConnCloses(t *testing.T) {
 	c := NewConn(newFakeSink()) // Run never started: nobody takes catch-up
 	c.Hold(trip)

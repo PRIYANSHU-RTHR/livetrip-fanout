@@ -98,6 +98,10 @@ func run(logger *slog.Logger, cfg config) error {
 		func() float64 { return float64(ws.Conns()) })
 	metrics.Gauge("livetrip_topics_subscribed", "Topics with at least one subscriber on this node.",
 		func() float64 { return float64(hub.Topics()) })
+	for name, bus := range map[string]*redis.Bus{"main": mainBus, "sos": sosBus} {
+		metrics.LabeledGauge("livetrip_bus_backlog", "Messages waiting in a Redis subscription channel for the router.",
+			map[string]string{"bus": name}, func() float64 { return float64(bus.Backlog()) })
+	}
 
 	mux := http.NewServeMux()
 	ws.Register(mux)

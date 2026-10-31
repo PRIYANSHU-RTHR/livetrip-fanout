@@ -116,6 +116,49 @@ func TestBusDeliversAfterConfirmedSubscribe(t *testing.T) {
 	}
 }
 
+// blockingHandler holds Run inside Deliver until release is closed.
+type blockingHandler struct {
+	Handler
+	release chan struct{}
+}
+
+func (h blockingHandler) Deliver(ev domain.Event) {
+	<-h.release
+	h.Handler.Deliver(ev)
+}
+
+// While the router is stuck, messages pile up in the subscription channel
+// and Backlog counts them; once it catches up the backlog is empty.
+func TestBusBacklogCountsWaitingMessages(t *testing.T) {
+	ctx := context.Background()
+	c := newClient(t)
+	log := New(c, Config{})
+	hub := newRecordingHub()
+	main, sos := NewBus(c, discardLogger()), NewBus(c, discardLogger())
+	if n := main.Backlog(); n != 0 {
+		t.Fatalf("backlog before Run = %d, want 0", n)
+	}
+	router := routing.New(hub, log, main, sos, discardLogger(), routing.Config{})
+	release := make(chan struct{})
+	startBus(t, main, blockingHandler{Handler: router, release: release})
+	startBus(t, sos, router)
+
+	topic := logtest.NewTopic(t)
+	if err := router.OnFirstSubscriber(topic); err != nil {
+		t.Fatal(err)
+	}
+	const total = 10
+	for i := 1; i <= total; i++ {
+		if _, _, err := log.Publish(ctx, logtest.NewEvent(topic, fmt.Sprintf("s-%d", i), "cab-1", domain.KindStatus)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Run holds the first message; the rest wait in the channel.
+	waitFor(t, "backlog", func() bool { return main.Backlog() == total-1 })
+	close(release)
+	waitFor(t, "drain", func() bool { return main.Backlog() == 0 && len(hub.got(topic)) == total })
+}
+
 // Failure injection: Redis drops the gateway's pub/sub connections while
 // statuses are being published. Every status must still reach the hub
 // exactly once and in order.

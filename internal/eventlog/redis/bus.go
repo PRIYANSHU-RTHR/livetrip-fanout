@@ -39,6 +39,8 @@ type Bus struct {
 	mu sync.Mutex
 	// waiting has the Subscribe calls still waiting for Redis to confirm.
 	waiting map[string][]chan struct{}
+	// ch is the go-redis message channel, set once Run starts.
+	ch <-chan any
 }
 
 func NewBus(client goredis.UniversalClient, logger *slog.Logger) *Bus {
@@ -82,6 +84,9 @@ func (b *Bus) Unsubscribe(ctx context.Context, topic domain.Topic) error {
 // closed.
 func (b *Bus) Run(ctx context.Context, h Handler) error {
 	ch := b.ps.ChannelWithSubscriptions(goredis.WithChannelSize(BusChannelSize))
+	b.mu.Lock()
+	b.ch = ch
+	b.mu.Unlock()
 	for {
 		select {
 		case <-ctx.Done():
@@ -146,6 +151,15 @@ func (b *Bus) stopWaiting(name string, ok chan struct{}) {
 	} else {
 		b.waiting[name] = ws
 	}
+}
+
+// Backlog returns how many messages wait between the Redis reader and Run
+// (at most BusChannelSize); 0 before Run starts. A backlog near the cap
+// means messages are about to be dropped and repaired from the log.
+func (b *Bus) Backlog() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.ch)
 }
 
 // Close closes the connection; Run then returns ErrBusClosed.
