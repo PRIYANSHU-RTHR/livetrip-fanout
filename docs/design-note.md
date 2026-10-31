@@ -107,11 +107,16 @@ Benchmarks (`make bench`, Intel Core Ultra 7 155H, no race detector):
 | Replay 1,000 events | 77 µs |
 | Memory per connection | 54 KB |
 
-**Sizing for the case study peak.** 200,000 screens × 54 KB ≈ 11 GB across gateways. At
-50,000 connections per gateway that is at least 4 gateways; 5 or 6 leave room for one to
-fail. Redis remains the ceiling: every publish runs one Lua script on a single primary, so
-an SOS script can wait a few microseconds behind queued location scripts. Redis Cluster
-spreads topics across shards; keys are already hash-tagged per topic.
+**Sizing.** The local setup runs 3 gateways. That is the smallest cluster where one node
+can be killed and two remain, and it carries the 10,000-connection test with room to
+spare. For the case study's real peak of 200,000 screens: 200,000 × 54 KB ≈ 11 GB of
+connection memory, and at 50,000 connections per gateway that needs at least 4 gateways;
+production would run 5 or 6 so that losing one still leaves headroom. Adding a gateway is
+one more service in the compose file (or more replicas in Kubernetes); nothing in the code
+changes, because gateways keep no state. Redis remains the ceiling: every publish runs one
+Lua script on a single primary, so an SOS script can wait a few microseconds behind queued
+location scripts. Redis Cluster spreads topics across shards; keys are already hash-tagged
+per topic.
 
 **Known limits.** Gap repair reads Redis on the bus goroutine, so a slow repair can delay
 other topics on that node by up to 2 s. A topic's first subscriber on a node waits for the
