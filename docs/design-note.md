@@ -85,3 +85,34 @@ Token in `Authorization: Bearer ...` or `?token=`.
 
 Every service exposes `/metrics`, scraped by Prometheus every 5 seconds. The first things to watch at 3 AM: `livetrip_delivery_latency_seconds{kind="sos"}`, `livetrip_reliable_queue_depth`, `livetrip_ws_closes_total{reason}`, `livetrip_gap_repairs_total`, `livetrip_redis_errors_total`. Labels never include topic, tenant or user. Logs are JSON; payloads are never logged, and phone, email and coordinates are redacted if they ever appear.
 
+## 8. Cost of the core operations
+
+| Operation | Time | Space |
+|---|---|---|
+| Publish (Lua script) | O(1) per event | one stream entry per status/SOS; one hash field per cab for location |
+| Hub.Publish | O(subscribers of the topic on this node) | nothing extra |
+| Conn.Enqueue | O(1), never blocks | reliable lane fixed at 64 events |
+| Location conflation | O(1) | bounded by cabs per topic, not by update rate |
+| Resume | O(missed events), at most about 1,000 | streamed to the client, not buffered |
+| Gap repair | O(gap), at most 64 | |
+
+Benchmarks (`make bench`, Intel Core Ultra 7 155H, no race detector):
+
+| Benchmark | Result |
+|---|---|
+| Enqueue a status on one connection | 61 ns, 0 allocations |
+| Conflate a location | 113 ns, 0 allocations |
+| Hub fan-out of one status to 100 / 10,000 subscribers | 4.7 µs / 2.2 ms (47–216 ns per delivery), 0 allocations |
+| Publish to the in-memory log | about 0.8 µs |
+| Replay 1,000 events | 77 µs |
+| Memory per connection | 54 KB |
+
+**Sizing for the case study peak.** 200,000 screens × 54 KB ≈ 11 GB across gateways. At
+50,000 connections per gateway that is at least 4 gateways; 5 or 6 leave room for one to
+fail. Redis remains the ceiling: every publish runs one Lua script on a single primary, so
+an SOS script can wait a few microseconds behind queued location scripts. Redis Cluster
+spreads topics across shards; keys are already hash-tagged per topic.
+
+**Known limits.** Gap repair reads Redis on the bus goroutine, so a slow repair can delay
+other topics on that node by up to 2 s. A topic's first subscriber on a node waits for the
+Redis SUBSCRIBE round trip, and these first-subscribes are handled one at a time.
