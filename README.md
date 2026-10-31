@@ -5,7 +5,7 @@ Live trip updates for employee transport. When a cab moves, a trip changes statu
 Built in Go with Redis for MoveInSync Case Study 4.
 
 - Design note (architecture, resume flow, failure table): [docs/design-note.md](docs/design-note.md)
-- Demo video: <a href="https://youtu.be/jbhRItaDSvc" target="_blank" rel="noopener noreferrer">Watch Demo on YouTube</a>
+- Demo video: [Watch Demo on YouTube](https://youtu.be/jbhRItaDSvc)
 
 ![Architecture](assets/Architecture_diagram.png)
 
